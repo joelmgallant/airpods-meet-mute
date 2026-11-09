@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs tests/js/meet-toggle.test.js against MeetToggleJS.source in headless Chrome.
+# Runs Tests/js/meet-toggle.test.js against MeetToggleJS.source in headless Chrome.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,7 +16,7 @@ fi
 {
     echo '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="results">RESULT: DID NOT RUN</div><script>'
     echo "var meetToggle = $TOGGLE_JS;"
-    cat tests/js/meet-toggle.test.js
+    cat Tests/js/meet-toggle.test.js
     echo '</script></body></html>'
 } > "$WORK/test.html"
 
