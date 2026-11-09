@@ -1,7 +1,7 @@
 # AirPods Meet Mute — Design
 
 Date: 2026-11-09
-Status: Approved (design), pending spec review
+Status: Implemented 2026-11-09 (see README for the macOS behaviours found during live testing)
 
 ## Goal
 
