@@ -12,7 +12,8 @@ public let layoutChangedMessage =
 /// Finds the Meet call tab and sets its mic. Main-thread only (AppleScript).
 public final class MuteController {
     private let browsers: [MeetBrowser]
-    private var callTab: MeetTab?
+    /// The call tab found by the last refresh, with the bridge that owns it.
+    private var callTarget: (tab: MeetTab, bridge: MeetBrowser)?
     private var sawMeetTabWithoutButton = false
 
     public private(set) var status: MeetStatus = .idle
@@ -46,7 +47,7 @@ public final class MuteController {
                 }
                 switch MeetToggleJS.parse(output) {
                 case .state(let mic):
-                    callTab = tab
+                    callTarget = (tab, bridge)
                     status = .inCall(mic)
                     return status
                 case .noButton:
@@ -57,35 +58,61 @@ public final class MuteController {
             }
         }
         if firstError == nil && !sawMeetTabWithoutButton { lastPressError = nil }
-        callTab = nil
+        callTarget = nil
         status = firstError.map(MeetStatus.error) ?? .idle
         return status
     }
 
     /// Handles an AirPods mute gesture. Returns the new mic state, or nil when not handled.
+    /// Tries the cached call tab first (one Apple Event); only when that fails does it pay for
+    /// a full refresh, and then retries once.
     public func handleMuteRequest(shouldMute: Bool) -> MicState? {
+        if let target = callTarget, case .state(let mic) = pressOutcome(on: target, shouldMute: shouldMute) {
+            recordPress(mic)
+            return mic
+        }
         refresh()
-        guard let tab = callTab,
-              let bridge = browsers.first(where: { $0.browser == tab.browser }) else {
+        guard let target = callTarget else {
             if sawMeetTabWithoutButton { lastPressError = layoutChangedMessage }
             return nil
         }
-        do {
-            let output = try bridge.execute(javaScript: MeetToggleJS.invocation(shouldMute ? .mute : .unmute), in: tab)
-            switch MeetToggleJS.parse(output) {
-            case .state(let mic):
-                status = .inCall(mic)
-                lastPressError = nil
-                return mic
-            case .noButton:
-                lastPressError = layoutChangedMessage
-            case .unexpected(let other):
-                lastPressError = "\(tab.browser.displayName): unexpected Meet script output: \(other)"
-            }
-        } catch {
-            lastPressError = message(for: error, browser: tab.browser)
+        switch pressOutcome(on: target, shouldMute: shouldMute) {
+        case .state(let mic):
+            recordPress(mic)
+            return mic
+        case .noButton:
+            lastPressError = layoutChangedMessage
+        case .unexpected(let other):
+            lastPressError = "\(target.tab.browser.displayName): unexpected Meet script output: \(other)"
+        case .failed(let error):
+            lastPressError = message(for: error, browser: target.tab.browser)
         }
         return nil
+    }
+
+    private enum PressOutcome {
+        case state(MicState)
+        case noButton
+        case unexpected(String)
+        case failed(Error)
+    }
+
+    private func pressOutcome(on target: (tab: MeetTab, bridge: MeetBrowser), shouldMute: Bool) -> PressOutcome {
+        do {
+            let output = try target.bridge.execute(javaScript: MeetToggleJS.invocation(shouldMute ? .mute : .unmute), in: target.tab)
+            switch MeetToggleJS.parse(output) {
+            case .state(let mic): return .state(mic)
+            case .noButton: return .noButton
+            case .unexpected(let other): return .unexpected(other)
+            }
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    private func recordPress(_ mic: MicState) {
+        status = .inCall(mic)
+        lastPressError = nil
     }
 
     private func message(for error: Error, browser: Browser) -> String {
