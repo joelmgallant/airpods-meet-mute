@@ -38,14 +38,18 @@ final class GestureListener {
     /// Keeps the system mute state equal to Meet's, so the next gesture requests the right toggle.
     /// Main thread only. Never call from inside the mute handler: returning true from the
     /// handler already makes the system record the requested state.
-    func syncSystemMute(_ muted: Bool) {
-        guard audioApplication.isInputMuted != muted else { return }
+    /// Returns an error message when the system state could not be updated, nil otherwise.
+    @discardableResult
+    func syncSystemMute(_ muted: Bool) -> String? {
+        guard audioApplication.isInputMuted != muted else { return nil }
         isSyncingSystemMute = true
         defer { isSyncingSystemMute = false }
         do {
             try audioApplication.setInputMuted(muted)
+            return nil
         } catch {
             NSLog("AirPodsMeetMute: setInputMuted(\(muted)) failed: \(error)")
+            return "Could not update the system mute state: \(error.localizedDescription)"
         }
     }
 

@@ -6,6 +6,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// From docs/spike-findings.md (HOLD_INPUT_DURING_CALLS = true: gesture is only delivered while we hold input).
     private let holdInputDuringCalls = true
     private let pollInterval: TimeInterval = 3
+    /// A poll this soon after a handled press skips the system-mute sync: the press already
+    /// made the system record the requested state, and a sync from a stale read could undo it.
+    private let syncQuietPeriodAfterPress: TimeInterval = 1.5
+    /// Consecutive error polls tolerated mid-call before the held mic input is released.
+    private let errorPollsBeforeReleasingInput = 2
 
     private let controller = MuteController(browsers: Browser.allCases.map { ChromiumBridge(browser: $0) })
     private let listener = GestureListener()
@@ -13,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pollTimer: Timer?
     private var listenerError: String?
     private var inputError: String?
+    private var syncError: String?
+    private var lastHandledPress: Date?
+    private var wasInCall = false
+    private var consecutiveErrorPolls = 0
     private var loginItemError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -22,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // No syncSystemMute here: returning true makes the system record the requested
             // state, and calling setInputMuted from inside the handler re-enters the handler.
             let newState = self.controller.handleMuteRequest(shouldMute: shouldMute)
+            if newState != nil { self.lastHandledPress = Date() }
             self.render()
             return newState != nil
         }
@@ -38,10 +48,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func poll() {
         let status = controller.refresh()
-        if case .inCall(let mic) = status {
-            listener.syncSystemMute(mic == .muted)
+        switch status {
+        case .inCall(let mic):
+            consecutiveErrorPolls = 0
+            wasInCall = true
+            if let lastHandledPress, Date().timeIntervalSince(lastHandledPress) < syncQuietPeriodAfterPress {
+                // Leave syncError as it was: nothing was attempted.
+            } else {
+                syncError = listener.syncSystemMute(mic == .muted)
+            }
             inputError = holdInputDuringCalls ? listener.setHoldingInput(true) : nil
-        } else {
+        case .error where wasInCall && consecutiveErrorPolls < errorPollsBeforeReleasingInput:
+            // One transient error mid-call must not drop the held mic (and the gesture with it).
+            consecutiveErrorPolls += 1
+        case .error, .idle:
+            consecutiveErrorPolls = 0
+            wasInCall = false
+            syncError = nil
             listener.setHoldingInput(false)
             inputError = nil
         }
@@ -52,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.title = title(for: controller.status)
         let menu = NSMenu()
         menu.addItem(disabledItem(statusLine(for: controller.status)))
-        for problem in [listenerError, inputError, loginItemError, controller.lastPressError].compactMap({ $0 }) {
+        for problem in [listenerError, inputError, syncError, loginItemError, controller.lastPressError].compactMap({ $0 }) {
             menu.addItem(disabledItem("⚠️ " + problem))
         }
         menu.addItem(.separator())
@@ -65,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func title(for status: MeetStatus) -> String {
-        let hasProblem = listenerError != nil || inputError != nil || loginItemError != nil || controller.lastPressError != nil
+        let hasProblem = listenerError != nil || inputError != nil || syncError != nil || loginItemError != nil || controller.lastPressError != nil
         switch status {
         case .error: return "🎧⚠️"
         case _ where hasProblem: return "🎧⚠️"

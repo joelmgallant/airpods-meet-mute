@@ -49,26 +49,39 @@ Decision rule:
 
 | Unit | Responsibility | Depends on |
 |---|---|---|
-| `GestureListener` | Registers the mute-gesture handler; starts/stops the silent input tap when told to (only if the spike requires it); calls `setInputMuted(_:)` to keep the system state in sync. Exposes `onToggle: () -> Bool?` (new muted state, or `nil` = not handled). | AVFAudio |
-| `BrowserBridge` | For each running browser in `[Vivaldi, Chrome]`, lists tab URLs via AppleScript, identifies Meet call tabs, and executes JavaScript in a chosen tab. Protocol-backed so tests can use a fake. | NSAppleScript |
-| `meet-toggle.js` | Locates Meet's mic button (`button[data-is-muted]`), clicks it, returns `"muted"`, `"unmuted"`, or `"no-button"`. All Meet DOM selectors live only in this file. Also has a read-only mode returning current state without clicking. | Meet's DOM |
-| `CallWatcher` | Polls every 3 s for a Meet call tab; starts/stops the input tap; publishes call state (idle / in call muted / in call unmuted / error). | BrowserBridge, GestureListener |
-| App shell | `NSStatusItem` menu: status line, error text with fix instructions, Launch at Login toggle (`SMAppService.mainApp`), Quit. | all units |
+| `GestureListener` | Registers the mute-gesture handler and observes the mute-state notification (the opt-in, see below); starts/stops the silent input tap when told to; `syncSystemMute(_:)` calls `setInputMuted(_:)` to keep the system state equal to Meet's, guarded against re-entering its own handler. Exposes `onMuteRequest: (Bool) -> Bool` (receives the requested mute state; returns true if handled). | AVFAudio |
+| `BrowserBridge` | For each running browser in `[Vivaldi, Chrome]`, lists tab URLs via AppleScript (one Apple Event per window) and executes JavaScript in a chosen tab. Every script runs under a 3 s AppleScript timeout so a hung browser cannot freeze the menu. Protocol-backed so tests can use a fake. | NSAppleScript |
+| `MeetToggleJS` | The in-page script, embedded as a Swift raw string (not a bundle resource). Locates Meet's mic button (`button[data-is-muted]`), clicks it, returns `"muted"`, `"unmuted"`, or `"no-button"`. All Meet DOM selectors live only here. Also has a read-only query mode that returns the current state without clicking. | Meet's DOM |
+| `MuteController` (in `MeetMuteCore`) | Polling and press logic: finds the call tab (`refresh()`), reads its mic state, and handles a press by running mute/unmute on the cached call tab, falling back to one refresh and retry if that fails. Publishes status (idle / in call muted / in call unmuted / error) and the last press error. | BrowserBridge, MeetToggleJS |
+| `AppDelegate` (app shell) | 3 s poll timer, the held-input tap lifecycle, and the `NSStatusItem` menu: status line, error text with fix instructions, Launch at Login toggle (`SMAppService.mainApp`), Quit. | all units |
 
-A Meet tab URL matches `^https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}`.
+A Meet tab URL matches `^https://meet\.google\.com/(?:meet/)?[a-z]{3}-[a-z]{4}-[a-z]{3}(?:[/?#]|$)`.
 A tab is a *call tab* when the read-only JS reports a mic button present (excludes
 lobbies and landing pages).
+
+Two macOS requirements found live (details in the README):
+
+- The gesture only reaches an app that holds an active audio input, so the app holds a
+  silent input tap while a call is open and releases it when the call ends.
+- Registering the handler is not enough: the app must also observe
+  `AVAudioApplication.inputMuteStateChangeNotification`, which is what opts it into
+  Bluetooth accessory muting. Without the observer every press is silently rejected.
 
 ## Data flow (one press)
 
 1. macOS invokes the gesture handler.
-2. `BrowserBridge` returns the first call tab across running browsers (Vivaldi before
-   Chrome; within a browser, window then tab order).
-3. No call tab: return `nil` (not handled); macOS behaves as normal.
-4. Run `meet-toggle.js` in that tab; parse its result.
-5. `"muted"` / `"unmuted"`: call `setInputMuted(...)` with that value so the chime
-   matches, update the menu-bar icon, return the new state.
-6. `"no-button"` or any AppleScript error: show the error in the menu, return `nil`.
+2. `MuteController` uses the cached call tab from the last poll; if there is none, or
+   running the script on it fails, it refreshes (first call tab across running browsers,
+   Vivaldi before Chrome, then window and tab order) and retries once.
+3. No call tab: return `false` (not handled); macOS behaves as normal.
+4. Run the mute/unmute script in that tab; parse its result.
+5. `"muted"` / `"unmuted"`: update the menu-bar icon and return `true`. Returning `true`
+   makes the system record the requested state and play the chime. The press path must
+   not call `setInputMuted`: it synchronously re-enters our own handler, which stopped
+   the state being recorded and caused a libdispatch crash. Only the 3 s poll calls it,
+   and only when Meet and the system disagree, guarded by a flag that makes the handler
+   accept the re-entrant call without acting.
+6. `"no-button"` or any AppleScript error: show the error in the menu, return `false`.
 
 ## Error handling
 
@@ -79,6 +92,7 @@ Every failure is visible in the menu; none is swallowed.
 | Automation permission denied | AppleScript error -1743 | Which browser, and System Settings › Privacy & Security › Automation |
 | JS from Apple Events disabled | Chromium's "Executing JavaScript through AppleScript is turned off" error | Enable View › Developer › Allow JavaScript from Apple Events |
 | Meet DOM changed | JS returns `"no-button"` in a call tab | "Meet layout changed — selector needs update" |
+| Browser hung or unresponsive | AppleScript error -1712 (3 s timeout) | Which browser is not responding |
 | Microphone permission denied (input tap only) | `AVCaptureDevice.authorizationStatus(for: .audio)` | System Settings › Privacy & Security › Microphone |
 
 ## Testing
@@ -98,7 +112,7 @@ Every failure is visible in the menu; none is swallowed.
 - SwiftPM package; executable target plus a library target holding the testable units.
 - `scripts/build-app.sh` assembles `AirPodsMeetMute.app`: binary, `Info.plist` with
   `LSUIElement=true`, `NSMicrophoneUsageDescription`, `NSAppleEventsUsageDescription`,
-  and the JS file as a bundle resource.
+  (the in-page JS is compiled in, not shipped as a resource).
 - Sign with the stable `XXXXXXXXXX` identity (hardened runtime with the
   `com.apple.security.automation.apple-events` and, if needed, `device.audio-input`
   entitlements) so TCC grants survive rebuilds.
@@ -106,6 +120,6 @@ Every failure is visible in the menu; none is swallowed.
 ## Milestones
 
 1. Gesture-delivery spike — continue or stop, per the decision rule.
-2. `BrowserBridge` + `meet-toggle.js`, with tests.
-3. `GestureListener` + `CallWatcher` + menu shell wired together.
+2. `BrowserBridge` + `MeetToggleJS`, with tests.
+3. `GestureListener` + `MuteController` + `AppDelegate` menu shell wired together.
 4. Packaging, signing, Launch at Login, live verification.
