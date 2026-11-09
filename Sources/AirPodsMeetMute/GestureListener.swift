@@ -28,29 +28,49 @@ final class GestureListener {
     }
 
     /// Holds a silent microphone input so macOS delivers the gesture to us (per the spike).
-    /// Returns an error message when the tap could not start.
+    /// Returns an error message when the tap could not start. If a previously held engine has
+    /// stopped (device change, AirPods reconnect), it is torn down and rebuilt.
     @discardableResult
     func setHoldingInput(_ hold: Bool) -> String? {
+        if hold, let engine = heldEngine, !engine.isRunning {
+            releaseHeldEngine()
+        }
         if hold, heldEngine == nil {
-            guard AVCaptureDevice.authorizationStatus(for: .audio) != .denied else {
-                return "Microphone access denied — enable it in System Settings › Privacy & Security › Microphone"
-            }
-            let engine = AVAudioEngine()
-            let inputNode = engine.inputNode
-            inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputNode.outputFormat(forBus: 0)) { _, _ in }
-            do {
-                try engine.start()
-                heldEngine = engine
-            } catch {
-                inputNode.removeTap(onBus: 0)
-                return "Could not hold microphone input: \(error.localizedDescription)"
-            }
-        } else if !hold, let engine = heldEngine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-            heldEngine = nil
+            return startHeldEngine()
+        }
+        if !hold {
+            releaseHeldEngine()
         }
         return nil
+    }
+
+    private func startHeldEngine() -> String? {
+        guard AVCaptureDevice.authorizationStatus(for: .audio) != .denied else {
+            return "Microphone access denied — enable it in System Settings › Privacy & Security › Microphone"
+        }
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+        // installTap raises an uncatchable NSException on a zero-rate format (no usable input device).
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            return "No usable microphone input — check the input device in System Settings › Sound"
+        }
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { _, _ in }
+        do {
+            try engine.start()
+            heldEngine = engine
+            return nil
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            return "Could not hold microphone input: \(error.localizedDescription)"
+        }
+    }
+
+    private func releaseHeldEngine() {
+        guard let engine = heldEngine else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        heldEngine = nil
     }
 
     private static func onMain<Value>(_ work: () -> Value) -> Value {

@@ -13,12 +13,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pollTimer: Timer?
     private var listenerError: String?
     private var inputError: String?
+    private var loginItemError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         listener.onMuteRequest = { [weak self] shouldMute in
             guard let self else { return false }
             let newState = self.controller.handleMuteRequest(shouldMute: shouldMute)
+            if let newState {
+                self.listener.syncSystemMute(newState == .muted)
+            }
             self.render()
             return newState != nil
         }
@@ -49,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.title = title(for: controller.status)
         let menu = NSMenu()
         menu.addItem(disabledItem(statusLine(for: controller.status)))
-        for problem in [listenerError, inputError, controller.lastPressError].compactMap({ $0 }) {
+        for problem in [listenerError, inputError, loginItemError, controller.lastPressError].compactMap({ $0 }) {
             menu.addItem(disabledItem("⚠️ " + problem))
         }
         menu.addItem(.separator())
@@ -62,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func title(for status: MeetStatus) -> String {
-        let hasProblem = listenerError != nil || inputError != nil || controller.lastPressError != nil
+        let hasProblem = listenerError != nil || inputError != nil || loginItemError != nil || controller.lastPressError != nil
         switch status {
         case .error: return "🎧⚠️"
         case _ where hasProblem: return "🎧⚠️"
@@ -94,8 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 try SMAppService.mainApp.register()
             }
+            loginItemError = nil
         } catch {
-            listenerError = "Launch at Login failed: \(error.localizedDescription)"
+            loginItemError = "Launch at Login failed: \(error.localizedDescription)"
         }
         render()
     }
