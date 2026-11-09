@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .target(name: "MeetMuteCore"),
+        .executableTarget(name: "AirPodsMeetMute", dependencies: ["MeetMuteCore"]),
         .executableTarget(name: "MeetMuteSpike"),
         .testTarget(name: "MeetMuteCoreTests", dependencies: ["MeetMuteCore"]),
     ],
