@@ -16,7 +16,7 @@ public final class MuteController {
     private var sawMeetTabWithoutButton = false
 
     public private(set) var status: MeetStatus = .idle
-    /// The most recent press failure; cleared by the next successful press.
+    /// The most recent press failure; cleared by the next successful press, or once a poll finds no Meet tab at all.
     public private(set) var lastPressError: String?
 
     public init(browsers: [MeetBrowser]) {
@@ -29,24 +29,34 @@ public final class MuteController {
         var firstError: String?
         sawMeetTabWithoutButton = false
         for bridge in browsers {
+            let tabs: [MeetTab]
             do {
-                for tab in try bridge.meetTabs() {
-                    let output = try bridge.execute(javaScript: MeetToggleJS.invocation(.query), in: tab)
-                    switch MeetToggleJS.parse(output) {
-                    case .state(let mic):
-                        callTab = tab
-                        status = .inCall(mic)
-                        return status
-                    case .noButton:
-                        sawMeetTabWithoutButton = true
-                    case .unexpected(let other):
-                        firstError = firstError ?? "\(bridge.browser.displayName): unexpected Meet script output: \(other)"
-                    }
-                }
+                tabs = try bridge.meetTabs()
             } catch {
                 firstError = firstError ?? message(for: error, browser: bridge.browser)
+                continue
+            }
+            for tab in tabs {
+                let output: String
+                do {
+                    output = try bridge.execute(javaScript: MeetToggleJS.invocation(.query), in: tab)
+                } catch {
+                    firstError = firstError ?? message(for: error, browser: bridge.browser)
+                    continue
+                }
+                switch MeetToggleJS.parse(output) {
+                case .state(let mic):
+                    callTab = tab
+                    status = .inCall(mic)
+                    return status
+                case .noButton:
+                    sawMeetTabWithoutButton = true
+                case .unexpected(let other):
+                    firstError = firstError ?? "\(bridge.browser.displayName): unexpected Meet script output: \(other)"
+                }
             }
         }
+        if firstError == nil && !sawMeetTabWithoutButton { lastPressError = nil }
         callTab = nil
         status = firstError.map(MeetStatus.error) ?? .idle
         return status
