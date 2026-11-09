@@ -19,10 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         listener.onMuteRequest = { [weak self] shouldMute in
             guard let self else { return false }
+            // No syncSystemMute here: returning true makes the system record the requested
+            // state, and calling setInputMuted from inside the handler re-enters the handler.
             let newState = self.controller.handleMuteRequest(shouldMute: shouldMute)
-            if let newState {
-                self.listener.syncSystemMute(newState == .muted)
-            }
             self.render()
             return newState != nil
         }

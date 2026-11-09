@@ -10,16 +10,38 @@ final class GestureListener {
     /// Called on the main thread with the requested mute state; returns true if handled.
     var onMuteRequest: ((Bool) -> Bool)?
 
+    /// Observing this notification is what opts the app into AirPods muting on macOS: without
+    /// it the server logs "no recording audio apps found that are opted in to input muting"
+    /// and rejects every press (found by bisecting against the spike, 2026-11-09).
+    private var muteStateObserver: NSObjectProtocol?
+
+    /// True while syncSystemMute is inside setInputMuted. setInputMuted invokes our own mute
+    /// handler synchronously ("top-down mute"); the handler must accept that without driving
+    /// Meet or calling setInputMuted again, which re-enters libdispatch and crashes.
+    private var isSyncingSystemMute = false
+
     func start() throws {
         try audioApplication.setInputMuteStateChangeHandler { [weak self] inputShouldBeMuted in
             guard let self else { return false }
-            return Self.onMain { self.onMuteRequest?(inputShouldBeMuted) ?? false }
+            return Self.onMain {
+                if self.isSyncingSystemMute { return true }
+                return self.onMuteRequest?(inputShouldBeMuted) ?? false
+            }
         }
+        muteStateObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioApplication.inputMuteStateChangeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in }
     }
 
     /// Keeps the system mute state equal to Meet's, so the next gesture requests the right toggle.
+    /// Main thread only. Never call from inside the mute handler: returning true from the
+    /// handler already makes the system record the requested state.
     func syncSystemMute(_ muted: Bool) {
         guard audioApplication.isInputMuted != muted else { return }
+        isSyncingSystemMute = true
+        defer { isSyncingSystemMute = false }
         do {
             try audioApplication.setInputMuted(muted)
         } catch {
