@@ -52,8 +52,9 @@ Debug the audio server's side of a press with:
 - `osascript scripts/probe-meet.applescript com.vivaldi.Vivaldi` — live Meet button state
 - `scripts/build-app.sh MeetMuteSpike` — the original gesture-delivery spike (logs to
   `~/Library/Logs/MeetMuteSpike.log`; `open -n build/MeetMuteSpike.app --args tap`)
-- Builds are signed with the Apple Development identity so privacy grants survive
-  rebuilds; override with `CODESIGN_IDENTITY=...`.
+- Builds are signed with your first Apple Development identity (any free Apple ID
+  works via Xcode › Settings › Accounts) so privacy grants survive rebuilds; override
+  with `CODESIGN_IDENTITY=...`.
 
 ## Troubleshooting
 

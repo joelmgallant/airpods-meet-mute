@@ -22,7 +22,7 @@ and the AirPods mute chime all agree.
 - Primary browser Vivaldi; Chrome also supported. Both expose the identical Chromium
   AppleScript dictionary (`tab` / `URL` / `execute ... javascript`), so one code path
   serves both.
-- Signing identity: `Apple Development: you@example.com (XXXXXXXXXX)`.
+- Signing identity: the builder's own Apple Development identity (auto-detected by `scripts/build-app.sh`).
 
 ## Key risk and Milestone 1 (spike)
 
@@ -113,7 +113,7 @@ Every failure is visible in the menu; none is swallowed.
 - `scripts/build-app.sh` assembles `AirPodsMeetMute.app`: binary, `Info.plist` with
   `LSUIElement=true`, `NSMicrophoneUsageDescription`, `NSAppleEventsUsageDescription`,
   (the in-page JS is compiled in, not shipped as a resource).
-- Sign with the stable `XXXXXXXXXX` identity (hardened runtime with the
+- Sign with a stable Apple Development identity (hardened runtime with the
   `com.apple.security.automation.apple-events` and, if needed, `device.audio-input`
   entitlements) so TCC grants survive rebuilds.
 

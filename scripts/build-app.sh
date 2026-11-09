@@ -5,7 +5,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PRODUCT="${1:?usage: scripts/build-app.sh <Product>}"
-IDENTITY="${CODESIGN_IDENTITY:-Apple Development: you@example.com (XXXXXXXXXX)}"
+# Sign with a stable identity so macOS privacy grants (Microphone, Automation) survive
+# rebuilds; ad-hoc signatures change on every build and re-prompt each time.
+IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -n 1)}"
+if [ -z "$IDENTITY" ]; then
+    echo "No Apple Development signing identity found. Create one in Xcode (Settings › Accounts)," >&2
+    echo "or set CODESIGN_IDENTITY to any code-signing identity from: security find-identity -v -p codesigning" >&2
+    exit 1
+fi
+echo "Signing with: $IDENTITY"
 
 swift build -c release --product "$PRODUCT"
 BIN_DIR="$(swift build -c release --show-bin-path)"
