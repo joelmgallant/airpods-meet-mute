@@ -2,3 +2,5 @@
 *.app
 .swiftpm/
 .DS_Store
+.superpowers/
+build/
