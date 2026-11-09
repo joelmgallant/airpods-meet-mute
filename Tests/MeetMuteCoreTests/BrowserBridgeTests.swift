@@ -67,3 +67,27 @@ final class RecordingRunner: ScriptRunner {
 @Test func describeFallsBackToTheRawError() {
     #expect(describe(ScriptError(number: -2700, message: "boom"), browser: .chrome) == "Chrome: AppleScript error -2700: boom")
 }
+
+@Test func bothGeneratedScriptsRunUnderAThreeSecondTimeout() throws {
+    let runner = RecordingRunner([.success(""), .success("muted")])
+    let bridge = ChromiumBridge(browser: .vivaldi, runner: runner, isRunning: { true })
+    _ = try bridge.meetTabs()
+    _ = try bridge.execute(javaScript: "f()", in: MeetTab(browser: .vivaldi, window: 1, index: 1, url: "https://meet.google.com/abc-defg-hij"))
+    #expect(runner.scripts[0].contains("with timeout of 3 seconds"))
+    #expect(runner.scripts[0].contains("end timeout"))
+    #expect(runner.scripts[1].contains("with timeout of 3 seconds"))
+    #expect(runner.scripts[1].contains("end timeout"))
+}
+
+@Test func tabListingReadsEachWindowsURLsInOneAppleEvent() throws {
+    let runner = RecordingRunner([.success("")])
+    let bridge = ChromiumBridge(browser: .vivaldi, runner: runner, isRunning: { true })
+    _ = try bridge.meetTabs()
+    #expect(runner.scripts[0].contains("URL of every tab of window windowIndex"))
+    #expect(!runner.scripts[0].contains("URL of tab"))
+}
+
+@Test func describeExplainsAnAppleScriptTimeout() {
+    let text = describe(ScriptError(number: -1712, message: "Apple event timed out."), browser: .vivaldi)
+    #expect(text == "Vivaldi: not responding — AppleScript timed out after 3 s")
+}

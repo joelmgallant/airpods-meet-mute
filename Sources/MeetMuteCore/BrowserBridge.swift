@@ -40,6 +40,9 @@ public protocol MeetBrowser {
     func execute(javaScript: String, in tab: MeetTab) throws -> String
 }
 
+/// A hung browser must not freeze the main thread (and with it the menu) for AppleScript's 2-minute default.
+let appleScriptTimeoutSeconds = 3
+
 /// Drives a Chromium browser (Vivaldi, Chrome) through its AppleScript dictionary.
 public struct ChromiumBridge: MeetBrowser {
     public let browser: Browser
@@ -63,7 +66,9 @@ public struct ChromiumBridge: MeetBrowser {
     public func execute(javaScript: String, in tab: MeetTab) throws -> String {
         try runner.run("""
         tell application id "\(browser.bundleID)"
-            execute tab \(tab.index) of window \(tab.window) javascript \(appleScriptLiteral(javaScript))
+            with timeout of \(appleScriptTimeoutSeconds) seconds
+                execute tab \(tab.index) of window \(tab.window) javascript \(appleScriptLiteral(javaScript))
+            end timeout
         end tell
         """)
     }
@@ -73,11 +78,14 @@ public struct ChromiumBridge: MeetBrowser {
         set fieldSeparator to character id 9
         set listing to ""
         tell application id "\(browser.bundleID)"
-            repeat with windowIndex from 1 to count of windows
-                repeat with tabIndex from 1 to count of tabs of window windowIndex
-                    set listing to listing & windowIndex & fieldSeparator & tabIndex & fieldSeparator & (URL of tab tabIndex of window windowIndex) & linefeed
+            with timeout of \(appleScriptTimeoutSeconds) seconds
+                repeat with windowIndex from 1 to count of windows
+                    set tabURLs to URL of every tab of window windowIndex
+                    repeat with tabIndex from 1 to count of tabURLs
+                        set listing to listing & windowIndex & fieldSeparator & tabIndex & fieldSeparator & (item tabIndex of tabURLs) & linefeed
+                    end repeat
                 end repeat
-            end repeat
+            end timeout
         end tell
         return listing
         """
@@ -97,6 +105,9 @@ public func describe(_ error: ScriptError, browser: Browser) -> String {
     let name = browser.displayName
     if error.number == -1743 {
         return "\(name): Automation not allowed — enable it in System Settings › Privacy & Security › Automation"
+    }
+    if error.number == -1712 {
+        return "\(name): not responding — AppleScript timed out after \(appleScriptTimeoutSeconds) s"
     }
     if error.message.contains("JavaScript through AppleScript is turned off") {
         return "\(name): turn on Allow JavaScript from Apple Events (Chrome: View › Developer) in each profile you use for Meet"
