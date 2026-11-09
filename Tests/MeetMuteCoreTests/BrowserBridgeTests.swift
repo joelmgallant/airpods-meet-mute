@@ -43,7 +43,28 @@ final class RecordingRunner: ScriptRunner {
     let tab = MeetTab(browser: .chrome, window: 2, index: 5, url: "https://meet.google.com/abc-defg-hij")
     #expect(try bridge.execute(javaScript: #"f("a\b")"#, in: tab) == "muted")
     #expect(runner.scripts[0].contains(#"tell application id "com.google.Chrome""#))
-    #expect(runner.scripts[0].contains(#"execute tab 5 of window 2 javascript "f(\"a\\b\")""#))
+    #expect(runner.scripts[0].contains("set targetTab to tab 5 of window 2"))
+    #expect(runner.scripts[0].contains(#"execute targetTab javascript "f(\"a\\b\")""#))
+}
+
+@Test func executeRefusesToLaunchABrowserThatIsNotRunning() {
+    let runner = RecordingRunner([])
+    let bridge = ChromiumBridge(browser: .vivaldi, runner: runner, isRunning: { false })
+    let tab = MeetTab(browser: .vivaldi, window: 1, index: 1, url: "https://meet.google.com/abc-defg-hij")
+    #expect(throws: ScriptError.self) { try bridge.execute(javaScript: "f()", in: tab) }
+    #expect(runner.scripts.isEmpty)
+}
+
+@Test func executeOnlyRunsInATabStillShowingTheExpectedURL() throws {
+    let runner = RecordingRunner([.success("muted")])
+    let bridge = ChromiumBridge(browser: .vivaldi, runner: runner, isRunning: { true })
+    let tab = MeetTab(browser: .vivaldi, window: 1, index: 2, url: "https://meet.google.com/meet/qrs-tuvw-xyz")
+    _ = try bridge.execute(javaScript: "f()", in: tab)
+    let script = runner.scripts[0]
+    #expect(script.contains(#"if (URL of targetTab) is not "https://meet.google.com/meet/qrs-tuvw-xyz" then error"#))
+    let urlCheck = try #require(script.range(of: "if (URL of targetTab)"))
+    let execution = try #require(script.range(of: "execute targetTab"))
+    #expect(urlCheck.lowerBound < execution.lowerBound)
 }
 
 @Test func appleScriptLiteralEscapesBackslashesAndQuotes() {

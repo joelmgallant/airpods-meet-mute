@@ -63,11 +63,19 @@ public struct ChromiumBridge: MeetBrowser {
         return parseTabListing(try runner.run(listTabsScript), browser: browser)
     }
 
+    /// Runs JavaScript in `tab`. Never launches the browser (a `tell` would), and refuses to run
+    /// if the tab at that position no longer shows `tab.url`: AppleScript window indexes follow
+    /// front-to-back order, so a cached position can point at a different tab after a focus change.
     public func execute(javaScript: String, in tab: MeetTab) throws -> String {
-        try runner.run("""
+        guard isRunning() else {
+            throw ScriptError(number: -600, message: "\(browser.displayName) is not running")
+        }
+        return try runner.run("""
         tell application id "\(browser.bundleID)"
             with timeout of \(appleScriptTimeoutSeconds) seconds
-                execute tab \(tab.index) of window \(tab.window) javascript \(appleScriptLiteral(javaScript))
+                set targetTab to tab \(tab.index) of window \(tab.window)
+                if (URL of targetTab) is not \(appleScriptLiteral(tab.url)) then error "Meet tab moved" number -1728
+                execute targetTab javascript \(appleScriptLiteral(javaScript))
             end timeout
         end tell
         """)

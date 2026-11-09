@@ -219,7 +219,7 @@ func meetTab(_ browser: Browser, window: Int = 1, index: Int) -> MeetTab {
 @Test func aPressUsesTheCachedCallTabWithoutListingAgain() {
     let vivaldi = FakeBrowser(.vivaldi, tabs: [meetTab(.vivaldi, index: 3)], micMuted: [3: false])
     let controller = MuteController(browsers: [vivaldi])
-    controller.refresh()
+    #expect(controller.refresh() == .inCall(.unmuted))
     let listingsBeforePress = vivaldi.meetTabsCallCount
     #expect(controller.handleMuteRequest(shouldMute: true) == .muted)
     #expect(vivaldi.meetTabsCallCount == listingsBeforePress)
@@ -229,7 +229,7 @@ func meetTab(_ browser: Browser, window: Int = 1, index: Int) -> MeetTab {
 @Test func aPressFallsBackToRefreshWhenTheCachedTabHasNoMicButton() {
     let vivaldi = FakeBrowser(.vivaldi, tabs: [meetTab(.vivaldi, index: 3)], micMuted: [3: false])
     let controller = MuteController(browsers: [vivaldi])
-    controller.refresh()
+    #expect(controller.refresh() == .inCall(.unmuted))
     vivaldi.micMuted[3] = nil
     vivaldi.tabs = [meetTab(.vivaldi, index: 5)]
     vivaldi.micMuted[5] = false
@@ -243,7 +243,7 @@ func meetTab(_ browser: Browser, window: Int = 1, index: Int) -> MeetTab {
 @Test func aPressFallsBackToRefreshWhenTheCachedTabThrowsAndReportsIfItStillFails() {
     let vivaldi = FakeBrowser(.vivaldi, tabs: [meetTab(.vivaldi, index: 3)], micMuted: [3: false])
     let controller = MuteController(browsers: [vivaldi])
-    controller.refresh()
+    #expect(controller.refresh() == .inCall(.unmuted))
     vivaldi.mutationError = ScriptError(number: -2700, message: "boom")
     let listingsBeforePress = vivaldi.meetTabsCallCount
     #expect(controller.handleMuteRequest(shouldMute: true) == nil)
