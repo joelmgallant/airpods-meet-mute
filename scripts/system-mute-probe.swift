@@ -1,5 +1,5 @@
 // Standalone CoreAudio probe for the system-wide mute spike.
-// Usage: swift scripts/system-mute-probe.swift status|list|mute|unmute|level
+// Usage: swift scripts/system-mute-probe.swift status|inputs|list|mute|unmute|level
 import AVFoundation
 import AppKit
 import CoreAudio
@@ -58,6 +58,17 @@ func status() {
     }
 }
 
+/// The input-scope devices a process is doing I/O with (kAudioProcessPropertyDevices, macOS 14.2+).
+@available(macOS 14.2, *)
+func inputDeviceNames(of process: AudioObjectID) -> [String] {
+    var devicesAddress = address(kAudioProcessPropertyDevices, kAudioObjectPropertyScopeInput)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(process, &devicesAddress, 0, nil, &size) == noErr, size > 0 else { return ["(none reported)"] }
+    var devices = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(process, &devicesAddress, 0, nil, &size, &devices) == noErr else { return ["(read failed)"] }
+    return devices.map { device in "\(readString(device, kAudioObjectPropertyName)) [\(readString(device, kAudioDevicePropertyDeviceUID))]" }
+}
+
 func list() {
     guard #available(macOS 14.2, *) else { print("needs macOS 14.2"); return }
     var listAddress = address(kAudioHardwarePropertyProcessObjectList)
@@ -70,6 +81,7 @@ func list() {
         let pid = Int32(bitPattern: readUInt32(process, address(kAudioProcessPropertyPID)) ?? 0)
         let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "?"
         print("recording: pid=\(pid) bundle=\(readString(process, kAudioProcessPropertyBundleID)) name=\(name)")
+        print("  input devices: \(inputDeviceNames(of: process).joined(separator: ", "))")
         found += 1
     }
     print("\(found) recording process(es); probe pid=\(ProcessInfo.processInfo.processIdentifier)")
@@ -106,11 +118,25 @@ func level() {
     print(String(format: "samples=%d peak=%.5f rms=%.6f (%.1f dBFS)", samples, peak, rms, 20 * log10(max(rms, 1e-9))))
 }
 
+/// Mute state of every device that has an input mute (not just the default input).
+func inputs() {
+    var devicesAddress = address(kAudioHardwarePropertyDevices)
+    var size: UInt32 = 0
+    AudioObjectGetPropertyDataSize(systemObject, &devicesAddress, 0, nil, &size)
+    var devices = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    AudioObjectGetPropertyData(systemObject, &devicesAddress, 0, nil, &size, &devices)
+    for device in devices {
+        guard let muted = readUInt32(device, muteAddress) else { continue }
+        print("input \(readString(device, kAudioObjectPropertyName)): mute=\(muted)")
+    }
+}
+
 switch CommandLine.arguments.dropFirst().first {
 case "status": status()
+case "inputs": inputs()
 case "list": list()
 case "mute": setMute(true)
 case "unmute": setMute(false)
 case "level": level()
-default: print("usage: swift scripts/system-mute-probe.swift status|list|mute|unmute|level")
+default: print("usage: swift scripts/system-mute-probe.swift status|inputs|list|mute|unmute|level")
 }
