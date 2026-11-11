@@ -47,8 +47,22 @@ final class FakeInputDevices: InputDeviceProvider {
 
 final class MemoryMuteRecordStore: MuteRecordStore {
     var record: MuteRecord?
-    func load() -> MuteRecord? { record }
-    func save(_ newRecord: MuteRecord?) { record = newRecord }
+    var failNextSave = false
+    var unreadable = false
+    /// Called with the new record just before it is stored, so a test can observe what else is true at save time.
+    var onSave: ((MuteRecord?) -> Void)?
+
+    func load() throws -> MuteRecord? {
+        if unreadable { throw MuteRecordStoreError.unreadable }
+        return record
+    }
+
+    func save(_ newRecord: MuteRecord?) throws {
+        if failNextSave { failNextSave = false; throw FakeDeviceError.setFailed }
+        onSave?(newRecord)
+        record = newRecord
+        unreadable = false
+    }
 }
 
 @Test func muteUsesTheDeviceMuteAndRecordsIt() throws {
@@ -182,8 +196,71 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let store = UserDefaultsMuteRecordStore(defaults: defaults)
     let record = MuteRecord(deviceUID: "airpods", mechanism: .volumeZero, previousVolume: 0.5)
-    store.save(record)
-    #expect(UserDefaultsMuteRecordStore(defaults: defaults).load() == record)
-    store.save(nil)
-    #expect(store.load() == nil)
+    try store.save(record)
+    #expect(try UserDefaultsMuteRecordStore(defaults: defaults).load() == record)
+    try store.save(nil)
+    #expect(try store.load() == nil)
+}
+
+@Test func muteWritesTheRecordBeforeTouchingTheDevice() throws {
+    let airpods = FakeInputDevice()
+    let store = MemoryMuteRecordStore()
+    var deviceWasMutedWhenRecordSaved: Bool?
+    store.onSave = { savedRecord in
+        if savedRecord != nil { deviceWasMutedWhenRecordSaved = airpods.muted }
+    }
+    try SystemMicMuter(devices: FakeInputDevices(airpods), store: store).mute()
+    #expect(deviceWasMutedWhenRecordSaved == false)
+    #expect(airpods.muted)
+}
+
+@Test func aFailedRecordWriteLeavesTheDeviceUntouched() {
+    let airpods = FakeInputDevice()
+    let store = MemoryMuteRecordStore()
+    store.failNextSave = true
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
+    #expect(throws: FakeDeviceError.self) { try muter.mute() }
+    #expect(!airpods.muted)
+    #expect(store.record == nil)
+}
+
+@Test func aFailedVolumeMuteRollsBackTheRecord() {
+    let volumeOnly = FakeInputDevice(supportsMute: false)
+    volumeOnly.failNextSet = true
+    let store = MemoryMuteRecordStore()
+    let muter = SystemMicMuter(devices: FakeInputDevices(volumeOnly), store: store)
+    #expect(throws: FakeDeviceError.self) { try muter.mute() }
+    #expect(volumeOnly.level == 0.8)
+    #expect(store.record == nil)
+}
+
+@Test func anUnreadableRecordFailsSafeByUnmuting() {
+    let airpods = FakeInputDevice()
+    airpods.muted = true
+    let store = MemoryMuteRecordStore()
+    store.unreadable = true
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
+    #expect(throws: SystemMuteError.recordWasUnreadable) { try muter.restoreIfWeMuted() }
+    #expect(!airpods.muted)
+    #expect(store.record == nil)
+    #expect(!store.unreadable)
+}
+
+@Test func aFailedRestoreKeepsTheRecord() throws {
+    let airpods = FakeInputDevice()
+    let store = MemoryMuteRecordStore()
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
+    try muter.mute()
+    airpods.failNextSet = true
+    #expect(throws: FakeDeviceError.self) { try muter.restoreIfWeMuted() }
+    #expect(store.record != nil)
+}
+
+@Test func userDefaultsStoreReportsUnreadableData() throws {
+    let suiteName = "airpods-meet-mute-tests-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defaults.set(Data("not json".utf8), forKey: "systemMuteRecord")
+    let store = UserDefaultsMuteRecordStore(defaults: defaults)
+    #expect(throws: MuteRecordStoreError.unreadable) { try store.load() }
 }
