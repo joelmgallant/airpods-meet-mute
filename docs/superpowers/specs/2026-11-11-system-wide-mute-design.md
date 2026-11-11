@@ -34,6 +34,9 @@ truthful in-page toggle; every other app gets a system-level microphone mute.
 - Probed (`docs/system-mute-spike-findings.md`): the AirPods Pro 2 mic in headset mode
   exposes a **settable input mute** (main element), and muting it silences a Slack huddle.
   A USB audio interface also has a settable input mute.
+- The AirPods only send the mute gesture while a call app records from the AirPods mic; a call
+  on another mic (verified with Slack on a USB device) gets no gesture, and our silent input
+  hold does not count as a call, so such calls are not stem-controllable.
 - No background recorders were seen without a call, so the ignore list starts empty.
 - The press only reaches an app that holds microphone input and observes
   `inputMuteStateChangeNotification` (see README, "macOS behaviours").

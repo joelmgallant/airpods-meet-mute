@@ -37,7 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         terminationSignal.install()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        restore.restore(when: "after the last run")  // a crash or force-quit may have left the mic muted
+        // A crash or force-quit may have left the mic muted; a call may still be running.
+        restore.restore(when: "after the last run", recorderNames: callRecorderNames(currentRecorders()))
         listener.onMuteRequest = { [weak self] shouldMute in
             guard let self else { return false }
             let handled = self.handlePress(shouldMute: shouldMute)
@@ -96,9 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !route.isSystem {
             systemReadError = nil
             systemPressError = nil
-            let recorderNames = (try? listing.get()).map { processes in callRecorders(processes).map(\.displayName) }
             // No-op unless we muted a device; audible if an app may still be on a call.
-            soundError = restore.restore(when: "after the call", route: route, recorderNames: recorderNames) ?? soundError
+            soundError = restore.restore(when: "after the call", route: route, recorderNames: callRecorderNames(listing)) ?? soundError
         }
         switch route {
         case .meet:
@@ -108,10 +108,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         case .system:
             do {
-                let muted = try systemMute.isMuted(deviceUIDs: systemMute.targetDeviceUIDs(for: routeTracker.systemRecorders))
-                systemMuted = muted
-                systemReadError = nil
-                if !inQuietPeriodAfterPress { syncError = listener.syncSystemMute(muted) }
+                switch try systemMute.muteState(deviceUIDs: systemMute.targetDeviceUIDs(for: routeTracker.systemRecorders)) {
+                case .mixed:  // never mirror a guess into AVAudioApplication
+                    systemMuted = nil
+                    systemReadError = "Some call mics are muted and some are live — press to unmute all"
+                case let state:
+                    systemMuted = state == .muted
+                    systemReadError = nil
+                    if !inQuietPeriodAfterPress { syncError = listener.syncSystemMute(state == .muted) }
+                }
             } catch {
                 systemMuted = nil
                 systemReadError = "Could not read the system mic state: \(error)"
@@ -132,6 +137,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var inQuietPeriodAfterPress: Bool {
         guard let lastHandledPress else { return false }
         return Date().timeIntervalSince(lastHandledPress) < syncQuietPeriodAfterPress
+    }
+
+    /// Names of the call apps recording; nil when the listing failed (unknown).
+    private func callRecorderNames(_ listing: Result<[RecordingProcess], Error>) -> [String]? {
+        (try? listing.get()).map { processes in callRecorders(processes).map(\.displayName) }
     }
 
     private func currentRecorders() -> Result<[RecordingProcess], Error> {

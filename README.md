@@ -44,6 +44,9 @@ Debug the audio server's side of a press with:
 
 - The app takes over the stem only while another app is recording from the mic, and
   stands aside for apps that handle AirPods mute themselves (Teams desktop, FaceTime).
+- The stem only works when the call app uses the AirPods' own mic: macOS and the AirPods
+  only send the mute gesture while an app is recording from the AirPods mic. A call on
+  another mic (a USB device, say) isn't stem-controllable by any app.
 - It mutes the mic(s) the call app actually uses, falling back to the default input when
   that can't be read (CoreAudio input mute, or input volume 0 where the device has no
   mute). If any of them can't be muted, none are left muted and the menu says which failed.

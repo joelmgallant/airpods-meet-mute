@@ -67,13 +67,15 @@ public final class SystemMicMuter {
         return outcome.changed
     }
 
-    /// True only when every target device is silent (device mute or input volume 0).
-    public func isMuted(deviceUIDs: [String]) throws -> Bool {
-        guard !deviceUIDs.isEmpty else { return false }
+    /// Silent = device mute or input volume 0. A missing device counts as not silent.
+    /// No targets reads as live.
+    public func muteState(deviceUIDs: [String]) throws -> InputMuteState {
+        var silentCount = 0
         for deviceUID in deviceUIDs {
-            guard let device = try devices.inputDevice(uid: deviceUID), try device.isSilenced() else { return false }
+            if let device = try devices.inputDevice(uid: deviceUID), try device.isSilenced() { silentCount += 1 }
         }
-        return true
+        if silentCount == 0 { return .live }
+        return silentCount == deviceUIDs.count ? .muted : .mixed
     }
 
     // MARK: Records
@@ -174,4 +176,12 @@ public final class SystemMicMuter {
 private func uniqued(_ deviceUIDs: [String]) -> [String] {
     var seen = Set<String>()
     return deviceUIDs.filter { deviceUID in seen.insert(deviceUID).inserted }
+}
+
+/// How silent a set of target devices is: every one, none, or some (a partial failure, or a
+/// target set that changed mid-call). `.mixed` must never be shown or mirrored as either side.
+public enum InputMuteState: Equatable, Sendable {
+    case muted
+    case live
+    case mixed
 }

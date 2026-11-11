@@ -245,7 +245,7 @@ private func failedDeviceNames(_ body: () throws -> Void) -> [String]? {
     try muter.mute(deviceUIDs: ["airpods", "usb"])
     #expect(airpods.muted && usb.muted)
     #expect(store.records == [deviceMuteRecord("airpods"), deviceMuteRecord("usb")])
-    #expect(try muter.isMuted(deviceUIDs: ["airpods", "usb"]))
+    #expect(try muter.muteState(deviceUIDs: ["airpods", "usb"]) == .muted)
     try muter.unmute(deviceUIDs: ["airpods", "usb"])
     #expect(!airpods.muted && !usb.muted)
     #expect(store.records.isEmpty)
@@ -366,18 +366,38 @@ private func failedDeviceNames(_ body: () throws -> Void) -> [String]? {
     #expect(store.records.isEmpty)
 }
 
-@Test func isMutedOnlyWhenEveryTargetIsSilent() throws {
+@Test func muteStateIsMutedOnlyWhenEveryTargetIsSilent() throws {
     let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
-    let volumeOnly = FakeInputDevice(uid: "usb", name: "USB Mic", supportsMute: false)
-    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, volumeOnly), store: MemoryMuteRecordStore())
-    #expect(try !muter.isMuted(deviceUIDs: ["airpods"]))
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, usb), store: MemoryMuteRecordStore())
     airpods.muted = true
-    #expect(try muter.isMuted(deviceUIDs: ["airpods"]))
-    #expect(try !muter.isMuted(deviceUIDs: ["airpods", "usb"]))
+    usb.muted = true
+    #expect(try muter.muteState(deviceUIDs: ["airpods", "usb"]) == .muted)
+}
+
+@Test func muteStateIsLiveWhenNoTargetIsSilent() throws {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, usb), store: MemoryMuteRecordStore())
+    #expect(try muter.muteState(deviceUIDs: ["airpods", "usb"]) == .live)
+    #expect(try muter.muteState(deviceUIDs: []) == .live)
+}
+
+@Test func muteStateIsMixedWhenOnlySomeTargetsAreSilent() throws {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, usb), store: MemoryMuteRecordStore())
+    airpods.muted = true
+    #expect(try muter.muteState(deviceUIDs: ["airpods", "usb"]) == .mixed)
+    #expect(try muter.muteState(deviceUIDs: ["airpods", "gone"]) == .mixed)
+}
+
+@Test func muteStateCountsInputVolumeZeroAsSilent() throws {
+    let volumeOnly = FakeInputDevice(uid: "usb", name: "USB Mic", supportsMute: false)
+    let muter = SystemMicMuter(devices: FakeInputDevices(volumeOnly), store: MemoryMuteRecordStore())
+    #expect(try muter.muteState(deviceUIDs: ["usb"]) == .live)
     volumeOnly.level = 0
-    #expect(try muter.isMuted(deviceUIDs: ["airpods", "usb"]))
-    #expect(try !muter.isMuted(deviceUIDs: ["airpods", "gone"]))
-    #expect(try !muter.isMuted(deviceUIDs: []))
+    #expect(try muter.muteState(deviceUIDs: ["usb"]) == .muted)
 }
 
 @Test func targetDevicesUseTheDefaultInputOnlyWhenRecordersReportNone() throws {

@@ -37,6 +37,13 @@ dead link.
 - `NSRunningApplication(processIdentifier:)` has no name for helper PIDs (`name=?`) —
   display names must come from the owning app's bundle ID.
 
+## Live check 2026-11-11
+
+- The AirPods only send the mute gesture while a call app is recording from the AirPods mic.
+  With Slack's mic set to a USB device, a stem press produced no mute gesture at all (no
+  audioaccessoryd "Mute Control" event, no audiomxd InputMuteAction), so no app can stem-control
+  a call on another mic. Our own silent input hold does not count as a call for this purpose.
+
 ## Decision
 
 - **Continue.** Device mute works on the AirPods and silences Slack.
