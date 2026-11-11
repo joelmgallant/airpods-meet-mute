@@ -78,11 +78,14 @@ Our own process is always excluded.
 
 A stuck system mute silences the user in every app, so:
 
-1. **Auto-unmute when the call ends**: when no non-native app is recording and no Meet
-   call is present, undo a mute we applied.
+1. **Auto-unmute whenever the route is not `system`**: when the call ends, a Meet call takes
+   over, or we stand aside for a native handler, undo a mute we applied.
+   A failed recorder listing is not "nothing recording": after a `system` route it is held
+   for up to 2 consecutive failed polls (`RouteTracker`) so a glitch cannot unmute mid-call.
 2. **Unmute on launch** if the persisted flag says we left the device muted (crash,
    force-quit, reboot mid-call).
-3. **Unmute on quit** (`applicationWillTerminate`).
+3. **Unmute on quit** (`applicationWillTerminate`); SIGTERM is routed through
+   `NSApp.terminate` so it runs too (SIGKILL is covered by rule 2).
 4. **Only undo our own mute**: if the device was already muted when we started, or the
    user muted it elsewhere, leave it alone (flag is set only when *we* muted it).
 5. **Default device changes** (AirPods disconnect mid-call): unmute the device we muted
