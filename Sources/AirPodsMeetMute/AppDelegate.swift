@@ -71,7 +71,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             newState = controller.handleMuteRequest(shouldMute: shouldMute)
         case .system:
             do {
-                if shouldMute { try systemMute.mute() } else { try systemMute.unmute() }
+                let targets = try systemMute.targetDeviceUIDs(for: routeTracker.systemRecorders)
+                if shouldMute { try systemMute.mute(deviceUIDs: targets) } else { try systemMute.unmute(deviceUIDs: targets) }
                 systemPressError = nil
                 systemMuted = shouldMute
                 newState = shouldMute ? .muted : .unmuted
@@ -106,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         case .system:
             do {
-                let muted = try systemMute.isDefaultInputMuted()
+                let muted = try systemMute.isMuted(deviceUIDs: systemMute.targetDeviceUIDs(for: routeTracker.systemRecorders))
                 systemMuted = muted
                 systemReadError = nil
                 if !inQuietPeriodAfterPress { syncError = listener.syncSystemMute(muted) }

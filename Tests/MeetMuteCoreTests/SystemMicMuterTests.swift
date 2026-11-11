@@ -12,6 +12,7 @@ final class FakeInputDevice: InputMuteDevice {
     var muted = false
     var level: Float = 0.8
     var failNextSet = false
+    var failEverySet = false
 
     init(uid: String = "airpods", name: String = "AirPods", supportsMute: Bool = true, supportsVolume: Bool = true) {
         self.uid = uid
@@ -22,18 +23,25 @@ final class FakeInputDevice: InputMuteDevice {
 
     func isMuted() throws -> Bool { muted }
     func setMuted(_ newValue: Bool) throws {
-        if failNextSet { failNextSet = false; throw FakeDeviceError.setFailed }
+        try failIfAsked()
         muted = newValue
     }
     func volume() throws -> Float { level }
     func setVolume(_ newValue: Float) throws {
-        if failNextSet { failNextSet = false; throw FakeDeviceError.setFailed }
+        try failIfAsked()
         level = newValue
+    }
+
+    private func failIfAsked() throws {
+        if failEverySet { throw FakeDeviceError.setFailed }
+        if failNextSet { failNextSet = false; throw FakeDeviceError.setFailed }
     }
 }
 
 final class FakeInputDevices: InputDeviceProvider {
+    /// The system default input.
     var current: FakeInputDevice
+    /// Connected devices; remove one to simulate unplugging it.
     var all: [FakeInputDevice]
 
     init(_ devices: FakeInputDevice...) {
@@ -41,46 +49,63 @@ final class FakeInputDevices: InputDeviceProvider {
         all = devices
     }
 
-    func defaultInputDevice() throws -> InputMuteDevice { current }
+    func defaultInputUID() throws -> String { current.uid }
     func inputDevice(uid: String) throws -> InputMuteDevice? { all.first { device in device.uid == uid } }
 }
 
 final class MemoryMuteRecordStore: MuteRecordStore {
-    var record: MuteRecord?
+    var records: [MuteRecord] = []
     var failNextSave = false
     var unreadable = false
-    /// Called with the new record just before it is stored, so a test can observe what else is true at save time.
-    var onSave: ((MuteRecord?) -> Void)?
+    /// Called with the new records just before they are stored, so a test can observe what else is true at save time.
+    var onSave: (([MuteRecord]) -> Void)?
 
-    func load() throws -> MuteRecord? {
+    func load() throws -> [MuteRecord] {
         if unreadable { throw MuteRecordStoreError.unreadable }
-        return record
+        return records
     }
 
-    func save(_ newRecord: MuteRecord?) throws {
+    func save(_ newRecords: [MuteRecord]) throws {
         if failNextSave { failNextSave = false; throw FakeDeviceError.setFailed }
-        onSave?(newRecord)
-        record = newRecord
+        onSave?(newRecords)
+        records = newRecords
         unreadable = false
     }
 }
 
+private func deviceMuteRecord(_ deviceUID: String) -> MuteRecord {
+    MuteRecord(deviceUID: deviceUID, mechanism: .deviceMute, previousVolume: nil)
+}
+
+private func failedDeviceNames(_ body: () throws -> Void) -> [String]? {
+    do {
+        try body()
+        return nil
+    } catch let SystemMuteError.devicesFailed(failures) {
+        return failures.map(\.deviceName)
+    } catch {
+        return ["unexpected: \(error)"]
+    }
+}
+
+// MARK: Single device (the behaviour before per-device muting)
+
 @Test func muteUsesTheDeviceMuteAndRecordsIt() throws {
     let airpods = FakeInputDevice()
     let store = MemoryMuteRecordStore()
-    try SystemMicMuter(devices: FakeInputDevices(airpods), store: store).mute()
+    try SystemMicMuter(devices: FakeInputDevices(airpods), store: store).mute(deviceUIDs: ["airpods"])
     #expect(airpods.muted)
-    #expect(store.record == MuteRecord(deviceUID: "airpods", mechanism: .deviceMute, previousVolume: nil))
+    #expect(store.records == [deviceMuteRecord("airpods")])
 }
 
 @Test func unmuteUndoesOurMuteAndClearsTheRecord() throws {
     let airpods = FakeInputDevice()
     let store = MemoryMuteRecordStore()
     let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
-    try muter.mute()
-    try muter.unmute()
+    try muter.mute(deviceUIDs: ["airpods"])
+    try muter.unmute(deviceUIDs: ["airpods"])
     #expect(!airpods.muted)
-    #expect(store.record == nil)
+    #expect(store.records.isEmpty)
 }
 
 @Test func aDeviceAlreadyMutedElsewhereIsNotClaimed() throws {
@@ -88,16 +113,16 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     airpods.muted = true
     let store = MemoryMuteRecordStore()
     let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
-    try muter.mute()
-    #expect(store.record == nil)
-    try muter.restoreIfWeMuted()
+    try muter.mute(deviceUIDs: ["airpods"])
+    #expect(store.records.isEmpty)
+    #expect(try !muter.restoreIfWeMuted())
     #expect(airpods.muted)
 }
 
 @Test func anExplicitUnmuteClearsAForeignMute() throws {
     let airpods = FakeInputDevice()
     airpods.muted = true
-    try SystemMicMuter(devices: FakeInputDevices(airpods), store: MemoryMuteRecordStore()).unmute()
+    try SystemMicMuter(devices: FakeInputDevices(airpods), store: MemoryMuteRecordStore()).unmute(deviceUIDs: ["airpods"])
     #expect(!airpods.muted)
 }
 
@@ -106,24 +131,24 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     airpods.level = 0.6
     let store = MemoryMuteRecordStore()
     let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
-    try muter.mute()
+    try muter.mute(deviceUIDs: ["airpods"])
     #expect(airpods.level == 0)
-    #expect(store.record == MuteRecord(deviceUID: "airpods", mechanism: .volumeZero, previousVolume: 0.6))
-    try muter.unmute()
+    #expect(store.records == [MuteRecord(deviceUID: "airpods", mechanism: .volumeZero, previousVolume: 0.6)])
+    try muter.unmute(deviceUIDs: ["airpods"])
     #expect(airpods.level == 0.6)
-    #expect(store.record == nil)
+    #expect(store.records.isEmpty)
 }
 
-@Test func aDeviceWithNoControlsIsReported() {
+@Test func aDeviceWithNoControlsIsReportedByName() {
     let fixed = FakeInputDevice(supportsMute: false, supportsVolume: false)
     let muter = SystemMicMuter(devices: FakeInputDevices(fixed), store: MemoryMuteRecordStore())
-    #expect(throws: SystemMuteError.unsupported(deviceName: "AirPods")) { try muter.mute() }
+    #expect(failedDeviceNames { try muter.mute(deviceUIDs: ["airpods"]) } == ["AirPods"])
 }
 
 @Test func restoreDoesNothingWithoutARecord() throws {
     let airpods = FakeInputDevice()
     airpods.muted = true
-    try SystemMicMuter(devices: FakeInputDevices(airpods), store: MemoryMuteRecordStore()).restoreIfWeMuted()
+    #expect(try !SystemMicMuter(devices: FakeInputDevices(airpods), store: MemoryMuteRecordStore()).restoreIfWeMuted())
     #expect(airpods.muted)
 }
 
@@ -131,42 +156,31 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     let airpods = FakeInputDevice()
     airpods.muted = true
     let store = MemoryMuteRecordStore()
-    store.record = MuteRecord(deviceUID: "airpods", mechanism: .deviceMute, previousVolume: nil)
-    try SystemMicMuter(devices: FakeInputDevices(airpods), store: store).restoreIfWeMuted()
+    store.records = [deviceMuteRecord("airpods")]
+    #expect(try SystemMicMuter(devices: FakeInputDevices(airpods), store: store).restoreIfWeMuted())
     #expect(!airpods.muted)
-    #expect(store.record == nil)
+    #expect(store.records.isEmpty)
 }
 
-@Test func aRecordForADisconnectedDeviceIsDropped() throws {
+@Test func restoreReportsNoChangeWhenOurMuteWasAlreadyUndone() throws {
+    let airpods = FakeInputDevice()
     let store = MemoryMuteRecordStore()
-    store.record = MuteRecord(deviceUID: "gone", mechanism: .deviceMute, previousVolume: nil)
-    try SystemMicMuter(devices: FakeInputDevices(FakeInputDevice()), store: store).restoreIfWeMuted()
-    #expect(store.record == nil)
-}
-
-@Test func aDefaultDeviceChangeRestoresThePreviousDeviceFirst() throws {
-    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
-    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
-    let devices = FakeInputDevices(airpods, usb)
-    let store = MemoryMuteRecordStore()
-    let muter = SystemMicMuter(devices: devices, store: store)
-    try muter.mute()
-    devices.current = usb
-    try muter.mute()
-    #expect(!airpods.muted)
-    #expect(usb.muted)
-    #expect(store.record?.deviceUID == "usb")
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
+    try muter.mute(deviceUIDs: ["airpods"])
+    airpods.muted = false  // the user unmuted in System Settings
+    #expect(try !muter.restoreIfWeMuted())
+    #expect(store.records.isEmpty)
 }
 
 @Test func muteReappliesWhenOurMuteWasUndoneElsewhere() throws {
     let airpods = FakeInputDevice()
     let store = MemoryMuteRecordStore()
     let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
-    try muter.mute()
+    try muter.mute(deviceUIDs: ["airpods"])
     airpods.muted = false
-    try muter.mute()
+    try muter.mute(deviceUIDs: ["airpods"])
     #expect(airpods.muted)
-    #expect(store.record != nil)
+    #expect(store.records == [deviceMuteRecord("airpods")])
 }
 
 @Test func aFailedMuteLeavesNoRecord() {
@@ -174,42 +188,18 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     airpods.failNextSet = true
     let store = MemoryMuteRecordStore()
     let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
-    #expect(throws: FakeDeviceError.self) { try muter.mute() }
-    #expect(store.record == nil)
-}
-
-@Test func defaultInputMutedReflectsMuteOrZeroVolume() throws {
-    let airpods = FakeInputDevice()
-    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: MemoryMuteRecordStore())
-    #expect(try !muter.isDefaultInputMuted())
-    airpods.muted = true
-    #expect(try muter.isDefaultInputMuted())
-
-    let volumeOnly = FakeInputDevice(supportsMute: false)
-    volumeOnly.level = 0
-    #expect(try SystemMicMuter(devices: FakeInputDevices(volumeOnly), store: MemoryMuteRecordStore()).isDefaultInputMuted())
-}
-
-@Test func userDefaultsStoreRoundTripsAndClears() throws {
-    let suiteName = "airpods-meet-mute-tests-\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suiteName))
-    defer { defaults.removePersistentDomain(forName: suiteName) }
-    let store = UserDefaultsMuteRecordStore(defaults: defaults)
-    let record = MuteRecord(deviceUID: "airpods", mechanism: .volumeZero, previousVolume: 0.5)
-    try store.save(record)
-    #expect(try UserDefaultsMuteRecordStore(defaults: defaults).load() == record)
-    try store.save(nil)
-    #expect(try store.load() == nil)
+    #expect(failedDeviceNames { try muter.mute(deviceUIDs: ["airpods"]) } == ["AirPods"])
+    #expect(store.records.isEmpty)
 }
 
 @Test func muteWritesTheRecordBeforeTouchingTheDevice() throws {
     let airpods = FakeInputDevice()
     let store = MemoryMuteRecordStore()
     var deviceWasMutedWhenRecordSaved: Bool?
-    store.onSave = { savedRecord in
-        if savedRecord != nil { deviceWasMutedWhenRecordSaved = airpods.muted }
+    store.onSave = { savedRecords in
+        if !savedRecords.isEmpty { deviceWasMutedWhenRecordSaved = airpods.muted }
     }
-    try SystemMicMuter(devices: FakeInputDevices(airpods), store: store).mute()
+    try SystemMicMuter(devices: FakeInputDevices(airpods), store: store).mute(deviceUIDs: ["airpods"])
     #expect(deviceWasMutedWhenRecordSaved == false)
     #expect(airpods.muted)
 }
@@ -219,9 +209,9 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     let store = MemoryMuteRecordStore()
     store.failNextSave = true
     let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
-    #expect(throws: FakeDeviceError.self) { try muter.mute() }
+    #expect(failedDeviceNames { try muter.mute(deviceUIDs: ["airpods"]) } == ["AirPods"])
     #expect(!airpods.muted)
-    #expect(store.record == nil)
+    #expect(store.records.isEmpty)
 }
 
 @Test func aFailedVolumeMuteRollsBackTheRecord() {
@@ -229,12 +219,140 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     volumeOnly.failNextSet = true
     let store = MemoryMuteRecordStore()
     let muter = SystemMicMuter(devices: FakeInputDevices(volumeOnly), store: store)
-    #expect(throws: FakeDeviceError.self) { try muter.mute() }
+    #expect(failedDeviceNames { try muter.mute(deviceUIDs: ["airpods"]) } == ["AirPods"])
     #expect(volumeOnly.level == 0.8)
-    #expect(store.record == nil)
+    #expect(store.records.isEmpty)
 }
 
-@Test func anUnreadableRecordFailsSafeByUnmuting() {
+@Test func aFailedRestoreKeepsTheRecord() throws {
+    let airpods = FakeInputDevice()
+    let store = MemoryMuteRecordStore()
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
+    try muter.mute(deviceUIDs: ["airpods"])
+    airpods.failNextSet = true
+    #expect(failedDeviceNames { try muter.restoreIfWeMuted() } == ["AirPods"])
+    #expect(store.records == [deviceMuteRecord("airpods")])
+}
+
+// MARK: Several devices
+
+@Test func muteSilencesEveryTargetDeviceWithOneRecordEach() throws {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    let store = MemoryMuteRecordStore()
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, usb), store: store)
+    try muter.mute(deviceUIDs: ["airpods", "usb"])
+    try muter.mute(deviceUIDs: ["airpods", "usb"])
+    #expect(airpods.muted && usb.muted)
+    #expect(store.records == [deviceMuteRecord("airpods"), deviceMuteRecord("usb")])
+    #expect(try muter.isMuted(deviceUIDs: ["airpods", "usb"]))
+    try muter.unmute(deviceUIDs: ["airpods", "usb"])
+    #expect(!airpods.muted && !usb.muted)
+    #expect(store.records.isEmpty)
+}
+
+@Test func oneFailingDeviceStillMutesTheOthersAndIsNamed() {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    let studio = FakeInputDevice(uid: "studio", name: "Studio Mic")
+    usb.failEverySet = true
+    let store = MemoryMuteRecordStore()
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, usb, studio), store: store)
+    #expect(failedDeviceNames { try muter.mute(deviceUIDs: ["airpods", "usb", "studio"]) } == ["USB Mic"])
+    #expect(airpods.muted && studio.muted && !usb.muted)
+    #expect(store.records == [deviceMuteRecord("airpods"), deviceMuteRecord("studio")])
+}
+
+@Test func aMissingTargetDeviceIsReportedAndTheOthersAreMuted() {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: MemoryMuteRecordStore())
+    #expect(failedDeviceNames { try muter.mute(deviceUIDs: ["gone", "airpods"]) } == ["gone"])
+    #expect(airpods.muted)
+}
+
+@Test func aPreExistingMuteOnOneTargetIsNotClaimed() throws {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    usb.muted = true
+    let store = MemoryMuteRecordStore()
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, usb), store: store)
+    try muter.mute(deviceUIDs: ["airpods", "usb"])
+    #expect(store.records == [deviceMuteRecord("airpods")])
+    #expect(try muter.restoreIfWeMuted())
+    #expect(!airpods.muted)
+    #expect(usb.muted)
+}
+
+@Test func switchingTargetDevicesRestoresTheOldOne() throws {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    let store = MemoryMuteRecordStore()
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, usb), store: store)
+    try muter.mute(deviceUIDs: ["airpods"])
+    try muter.mute(deviceUIDs: ["usb"])
+    #expect(!airpods.muted)
+    #expect(usb.muted)
+    #expect(store.records == [deviceMuteRecord("usb")])
+}
+
+@Test func unmuteAlsoRestoresOurMuteOnOtherDevices() throws {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    let store = MemoryMuteRecordStore()
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, usb), store: store)
+    try muter.mute(deviceUIDs: ["airpods"])
+    try muter.unmute(deviceUIDs: ["usb"])
+    #expect(!airpods.muted)
+    #expect(store.records.isEmpty)
+}
+
+@Test func anAbsentDeviceKeepsItsRecordUntilItReappears() throws {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    let devices = FakeInputDevices(airpods, usb)
+    let store = MemoryMuteRecordStore()
+    let muter = SystemMicMuter(devices: devices, store: store)
+    try muter.mute(deviceUIDs: ["airpods", "usb"])
+    devices.all = [airpods]  // USB mic unplugged while muted
+
+    #expect(try muter.restoreIfWeMuted())
+    #expect(!airpods.muted)
+    #expect(store.records == [deviceMuteRecord("usb")])
+    #expect(try !muter.restoreIfWeMuted())
+
+    devices.all = [airpods, usb]  // replugged, still muted by us
+    #expect(try muter.restoreIfWeMuted())
+    #expect(!usb.muted)
+    #expect(store.records.isEmpty)
+}
+
+@Test func isMutedOnlyWhenEveryTargetIsSilent() throws {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let volumeOnly = FakeInputDevice(uid: "usb", name: "USB Mic", supportsMute: false)
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, volumeOnly), store: MemoryMuteRecordStore())
+    #expect(try !muter.isMuted(deviceUIDs: ["airpods"]))
+    airpods.muted = true
+    #expect(try muter.isMuted(deviceUIDs: ["airpods"]))
+    #expect(try !muter.isMuted(deviceUIDs: ["airpods", "usb"]))
+    volumeOnly.level = 0
+    #expect(try muter.isMuted(deviceUIDs: ["airpods", "usb"]))
+    #expect(try !muter.isMuted(deviceUIDs: ["airpods", "gone"]))
+    #expect(try !muter.isMuted(deviceUIDs: []))
+}
+
+@Test func targetDevicesUseTheDefaultInputOnlyWhenRecordersReportNone() throws {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: MemoryMuteRecordStore())
+    let slack = RecordingProcess(pid: 1, bundleID: "com.tinyspeck.slackmacgap", displayName: "Slack")
+    #expect(try muter.targetDeviceUIDs(for: [slack]) == ["airpods"])
+    let slackOnUSB = RecordingProcess(pid: 1, bundleID: "com.tinyspeck.slackmacgap", displayName: "Slack",
+                                      inputDeviceUIDs: ["usb"])
+    #expect(try muter.targetDeviceUIDs(for: [slackOnUSB]) == ["usb"])
+}
+
+// MARK: Unreadable record list
+
+@Test func anUnreadableRecordFailsSafeByUnmutingTheDefaultInputOnRestore() {
     let airpods = FakeInputDevice()
     airpods.muted = true
     let store = MemoryMuteRecordStore()
@@ -242,7 +360,7 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
     #expect(throws: SystemMuteError.recordWasUnreadable) { try muter.restoreIfWeMuted() }
     #expect(!airpods.muted)
-    #expect(store.record == nil)
+    #expect(store.records.isEmpty)
     #expect(!store.unreadable)
 }
 
@@ -254,28 +372,54 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     let muter = SystemMicMuter(devices: FakeInputDevices(volumeOnly), store: store)
     #expect(throws: SystemMuteError.recordWasUnreadable) { try muter.restoreIfWeMuted() }
     #expect(volumeOnly.level == 1)
-    #expect(store.record == nil)
+    #expect(store.records.isEmpty)
 }
 
-@Test func anUnreadableRecordStopsAMutePressAfterUnmuting() {
-    let airpods = FakeInputDevice()
+@Test func anUnreadableRecordStopsAMutePressAfterUnmutingTheTargets() {
+    let airpods = FakeInputDevice(uid: "airpods", name: "AirPods")
+    let usb = FakeInputDevice(uid: "usb", name: "USB Mic")
+    let bystander = FakeInputDevice(uid: "other", name: "Other Mic")
     airpods.muted = true
+    usb.muted = true
+    bystander.muted = true
     let store = MemoryMuteRecordStore()
     store.unreadable = true
-    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
-    #expect(throws: SystemMuteError.recordWasUnreadable) { try muter.mute() }
-    #expect(!airpods.muted)
-    #expect(store.record == nil)
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods, usb, bystander), store: store)
+    #expect(throws: SystemMuteError.recordWasUnreadable) { try muter.mute(deviceUIDs: ["airpods", "usb"]) }
+    #expect(!airpods.muted && !usb.muted)
+    #expect(bystander.muted)  // bounded: only the devices we were asked about
+    #expect(store.records.isEmpty)
 }
 
-@Test func aFailedRestoreKeepsTheRecord() throws {
-    let airpods = FakeInputDevice()
-    let store = MemoryMuteRecordStore()
-    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
-    try muter.mute()
-    airpods.failNextSet = true
-    #expect(throws: FakeDeviceError.self) { try muter.restoreIfWeMuted() }
-    #expect(store.record != nil)
+// MARK: UserDefaults store
+
+@Test func userDefaultsStoreRoundTripsAndClears() throws {
+    let suiteName = "airpods-meet-mute-tests-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let store = UserDefaultsMuteRecordStore(defaults: defaults)
+    let records = [MuteRecord(deviceUID: "airpods", mechanism: .volumeZero, previousVolume: 0.5), deviceMuteRecord("usb")]
+    try store.save(records)
+    #expect(try UserDefaultsMuteRecordStore(defaults: defaults).load() == records)
+    try store.save([])
+    #expect(try store.load().isEmpty)
+    #expect(defaults.object(forKey: "systemMuteRecord") == nil)
+}
+
+@Test func userDefaultsStoreReadsTheSingleRecordWrittenByTheOldApp() throws {
+    let suiteName = "airpods-meet-mute-tests-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let oldFormat = #"{"deviceUID":"airpods","mechanism":"volumeZero","previousVolume":0.5}"#
+    defaults.set(Data(oldFormat.utf8), forKey: "systemMuteRecord")
+    let store = UserDefaultsMuteRecordStore(defaults: defaults)
+    #expect(try store.load() == [MuteRecord(deviceUID: "airpods", mechanism: .volumeZero, previousVolume: 0.5)])
+
+    let airpods = FakeInputDevice(supportsMute: false)
+    airpods.level = 0
+    #expect(try SystemMicMuter(devices: FakeInputDevices(airpods), store: store).restoreIfWeMuted())
+    #expect(airpods.level == 0.5)
+    #expect(try store.load().isEmpty)
 }
 
 @Test func userDefaultsStoreReportsUnreadableData() throws {

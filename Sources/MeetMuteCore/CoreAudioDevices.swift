@@ -52,6 +52,10 @@ public final class CoreAudioInputDevice: InputMuteDevice {
 public struct CoreAudioInputDeviceProvider: InputDeviceProvider {
     public init() {}
 
+    public func defaultInputUID() throws -> String {
+        try defaultInputDevice().uid
+    }
+
     public func defaultInputDevice() throws -> InputMuteDevice {
         let objectID = try readValue(
             AudioObjectID(kAudioObjectSystemObject),
