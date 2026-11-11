@@ -67,7 +67,8 @@ public final class SystemMicMuter {
         return outcome.changed
     }
 
-    /// Silent = device mute or input volume 0. A missing device counts as not silent.
+    /// Silent = device mute or input volume 0. A missing device counts as not silent (conservative:
+    /// never claims muted; a call mic that stays unplugged keeps the state mixed, so the poll stops syncing).
     /// No targets reads as live.
     public func muteState(deviceUIDs: [String]) throws -> InputMuteState {
         var silentCount = 0

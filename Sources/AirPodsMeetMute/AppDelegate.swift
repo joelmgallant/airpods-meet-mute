@@ -111,7 +111,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 switch try systemMute.muteState(deviceUIDs: systemMute.targetDeviceUIDs(for: routeTracker.systemRecorders)) {
                 case .mixed:  // never mirror a guess into AVAudioApplication
                     systemMuted = nil
-                    systemReadError = "Some call mics are muted and some are live — press to unmute all"
+                    syncError = nil  // no sync attempted; an earlier sync error no longer applies
+                    systemReadError = "Some call mics are muted and some are live — a press sets them all the same"
                 case let state:
                     systemMuted = state == .muted
                     systemReadError = nil

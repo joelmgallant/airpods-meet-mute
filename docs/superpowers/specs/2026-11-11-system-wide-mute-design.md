@@ -50,7 +50,7 @@ Core units are pure or sit behind a protocol, so routing and safety are unit-tes
 | `decideRoute` / `MuteRoute` (`MuteRoute.swift`) | Pure decision from (Meet call present?, recorders): `.meet`, `.standAside(nativeAppNames)`, `.system(appNames)` or `.idle`; `holdsMic` says when to hold the mic. `callRecorders` drops known background recorders. |
 | `RouteTracker` | Turns each poll's readings into a route, riding out a Meet script error or a failed/empty recorder listing for 2 polls; remembers `systemRecorders`, the recorders behind the current `.system` route. |
 | `targetInputDeviceUIDs` | The devices a system mute must silence: the de-duplicated union of the recorders' input devices, plus the default input if any recorder's devices are unknown. |
-| `SystemMicMuter` | `mute`/`unmute(deviceUIDs:)`, `restoreIfWeMuted() -> Bool`, `isMuted(deviceUIDs:)`. Device mute if settable, else volume 0 with the old level recorded. |
+| `SystemMicMuter` | `mute`/`unmute(deviceUIDs:)`, `restoreIfWeMuted() -> Bool`, `muteState(deviceUIDs:) -> InputMuteState` (muted / live / mixed). Device mute if settable, else volume 0 with the old level recorded. |
 | `MuteRecordStore` (`UserDefaultsMuteRecordStore`) | One `MuteRecord` per device we muted (UID, mechanism, previous volume). |
 | CoreAudio adapters | `CoreAudioRecordingProcessSource` (process objects, `kAudioProcessPropertyIsRunningInput`, input-scope `kAudioProcessPropertyDevices`; macOS 14.2+) and `CoreAudioInputDeviceProvider` / `CoreAudioInputDevice`. Thin, smoke-tested. |
 | App (`AppDelegate`, `SystemMuteRestore`) | Poll, press dispatch, auto-unmute with its notices, menu. |
