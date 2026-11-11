@@ -70,11 +70,19 @@ public func decideRoute(
     ignoredBundleIDs: Set<String> = ignoredRecorderBundleIDs
 ) -> MuteRoute {
     if meetCallPresent { return .meet }
-    let calls = recording.filter { process in !isListed(process.bundleID, in: ignoredBundleIDs) }
+    let calls = callRecorders(recording, ignoredBundleIDs: ignoredBundleIDs)
     let nativeHandlers = calls.filter { process in isListed(process.bundleID, in: nativeBundleIDs) }
     if !nativeHandlers.isEmpty { return .standAside(nativeAppNames: uniqueNames(nativeHandlers)) }
     if !calls.isEmpty { return .system(appNames: uniqueNames(calls)) }
     return .idle
+}
+
+/// Recorders that may be a call: everything except known background recorders.
+public func callRecorders(
+    _ recording: [RecordingProcess],
+    ignoredBundleIDs: Set<String> = ignoredRecorderBundleIDs
+) -> [RecordingProcess] {
+    recording.filter { process in !isListed(process.bundleID, in: ignoredBundleIDs) }
 }
 
 private func uniqueNames(_ processes: [RecordingProcess]) -> [String] {
