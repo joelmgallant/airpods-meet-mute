@@ -151,9 +151,12 @@ public final class SystemMicMuter {
         do {
             return try store.load()
         } catch MuteRecordStoreError.unreadable {
+            // Fail safe toward being heard: we can't know what the record said, so make the mic live.
             let device = try devices.defaultInputDevice()
-            if device.supportsMute, try device.isMuted() {
-                try device.setMuted(false)
+            if device.supportsMute {
+                if try device.isMuted() { try device.setMuted(false) }
+            } else if device.supportsVolume, try device.volume() == 0 {
+                try device.setVolume(1)  // the previous level was in the unreadable record
             }
             try store.save(nil)
             throw SystemMuteError.recordWasUnreadable
@@ -167,6 +170,8 @@ public final class SystemMicMuter {
         do {
             try applyMute()
         } catch {
+            // A failed rollback leaves a record for an unmuted device: stale but safe (a later
+            // restore re-unmutes). The device error is the one the caller needs to see.
             try? store.save(nil)
             throw error
         }

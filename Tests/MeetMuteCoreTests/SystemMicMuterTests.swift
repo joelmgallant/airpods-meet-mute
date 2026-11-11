@@ -246,6 +246,28 @@ final class MemoryMuteRecordStore: MuteRecordStore {
     #expect(!store.unreadable)
 }
 
+@Test func anUnreadableRecordRestoresAVolumeOnlyMicSilencedAtZero() {
+    let volumeOnly = FakeInputDevice(supportsMute: false)
+    volumeOnly.level = 0
+    let store = MemoryMuteRecordStore()
+    store.unreadable = true
+    let muter = SystemMicMuter(devices: FakeInputDevices(volumeOnly), store: store)
+    #expect(throws: SystemMuteError.recordWasUnreadable) { try muter.restoreIfWeMuted() }
+    #expect(volumeOnly.level == 1)
+    #expect(store.record == nil)
+}
+
+@Test func anUnreadableRecordStopsAMutePressAfterUnmuting() {
+    let airpods = FakeInputDevice()
+    airpods.muted = true
+    let store = MemoryMuteRecordStore()
+    store.unreadable = true
+    let muter = SystemMicMuter(devices: FakeInputDevices(airpods), store: store)
+    #expect(throws: SystemMuteError.recordWasUnreadable) { try muter.mute() }
+    #expect(!airpods.muted)
+    #expect(store.record == nil)
+}
+
 @Test func aFailedRestoreKeepsTheRecord() throws {
     let airpods = FakeInputDevice()
     let store = MemoryMuteRecordStore()
