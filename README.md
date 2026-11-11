@@ -50,6 +50,7 @@ Debug the audio server's side of a press with:
 - `swift test` — unit tests for the core (tab matching, AppleScript bridge, controller)
 - `scripts/test-js.sh` — the in-page script against a fixture, in headless Chrome
 - `osascript scripts/probe-meet.applescript com.vivaldi.Vivaldi` — live Meet button state
+- `scripts/make-icon.sh` / `scripts/make-sounds.sh` — regenerate the app icon and the press sounds (mute = high→low, unmute = low→high)
 - `scripts/build-app.sh MeetMuteSpike` — the original gesture-delivery spike (logs to
   `~/Library/Logs/MeetMuteSpike.log`; `open -n build/MeetMuteSpike.app --args tap`)
 - Builds are signed with your first Apple Development identity (any free Apple ID

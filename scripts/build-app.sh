@@ -27,6 +27,10 @@ if [ -f "Support/AppIcon.icns" ] && grep -q CFBundleIconFile "Support/$PRODUCT-I
     mkdir -p "$APP/Contents/Resources"
     cp Support/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 fi
+if [ "$PRODUCT" = "AirPodsMeetMute" ]; then
+    mkdir -p "$APP/Contents/Resources"
+    cp Support/Sounds/*.wav "$APP/Contents/Resources/"
+fi
 
 codesign --force --options runtime --timestamp=none \
     --entitlements "Support/$PRODUCT.entitlements" \

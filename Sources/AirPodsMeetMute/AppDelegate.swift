@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let controller = MuteController(browsers: Browser.allCases.map { ChromiumBridge(browser: $0) })
     private let listener = GestureListener()
+    private let pressSound = PressFeedbackSound()
+    private var soundError: String?
     private var statusItem: NSStatusItem!
     private var pollTimer: Timer?
     private var listenerError: String?
@@ -31,7 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // No syncSystemMute here: returning true makes the system record the requested
             // state, and calling setInputMuted from inside the handler re-enters the handler.
             let newState = self.controller.handleMuteRequest(shouldMute: shouldMute)
-            if newState != nil { self.lastHandledPress = Date() }
+            if let newState {
+                self.lastHandledPress = Date()
+                self.soundError = self.pressSound.play(for: newState)
+            }
             self.render()
             return newState != nil
         }
@@ -75,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.title = title(for: controller.status)
         let menu = NSMenu()
         menu.addItem(disabledItem(statusLine(for: controller.status)))
-        for problem in [listenerError, inputError, syncError, loginItemError, controller.lastPressError].compactMap({ $0 }) {
+        for problem in [listenerError, inputError, syncError, loginItemError, soundError, controller.lastPressError].compactMap({ $0 }) {
             menu.addItem(disabledItem("⚠️ " + problem))
         }
         menu.addItem(.separator())
@@ -88,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func title(for status: MeetStatus) -> String {
-        let hasProblem = listenerError != nil || inputError != nil || syncError != nil || loginItemError != nil || controller.lastPressError != nil
+        let hasProblem = listenerError != nil || inputError != nil || syncError != nil || loginItemError != nil || soundError != nil || controller.lastPressError != nil
         switch status {
         case .error: return "🎧⚠️"
         case _ where hasProblem: return "🎧⚠️"
