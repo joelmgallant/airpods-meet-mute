@@ -22,19 +22,29 @@ public struct CoreAudioRecordingProcessSource: RecordingProcessSource {
             propertyAddress(kAudioHardwarePropertyProcessObjectList),
             operation: "list audio processes"
         )
-        return processObjects.compactMap { processObject in
-            // A process can exit between the list and these reads; it is then simply not recording.
-            guard let recording = try? readValue(processObject, propertyAddress(kAudioProcessPropertyIsRunningInput),
-                                                 initial: UInt32(0), operation: "read process input state"),
-                  recording != 0,
-                  let pid = try? readValue(processObject, propertyAddress(kAudioProcessPropertyPID),
-                                           initial: pid_t(0), operation: "read process PID"),
-                  pid != excludedPID
-            else { return nil }
-            let bundleID = (try? readString(processObject, propertyAddress(kAudioProcessPropertyBundleID),
-                                            operation: "read process bundle ID")) ?? ""
-            return RecordingProcess(pid: pid, bundleID: bundleID, displayName: displayName(pid: pid, bundleID: bundleID))
+        return try processObjects.compactMap { processObject in try recordingProcess(processObject) }
+    }
+
+    /// nil when the process is not recording, is us, or vanished between the list and the reads
+    /// (the only skippable failure). Any other read error throws, so it reaches the caller's
+    /// tolerance and warning instead of silently dropping a recorder such as Slack.
+    @available(macOS 14.2, *)
+    private func recordingProcess(_ processObject: AudioObjectID) throws -> RecordingProcess? {
+        let recording: UInt32
+        let pid: pid_t
+        do {
+            recording = try readValue(processObject, propertyAddress(kAudioProcessPropertyIsRunningInput),
+                                      initial: UInt32(0), operation: "read process input state")
+            guard recording != 0 else { return nil }
+            pid = try readValue(processObject, propertyAddress(kAudioProcessPropertyPID),
+                                initial: pid_t(0), operation: "read process PID")
+        } catch let error as CoreAudioError where error.status == kAudioHardwareBadObjectError {
+            return nil
         }
+        guard pid != excludedPID else { return nil }
+        let bundleID = (try? readString(processObject, propertyAddress(kAudioProcessPropertyBundleID),
+                                        operation: "read process bundle ID")) ?? ""
+        return RecordingProcess(pid: pid, bundleID: bundleID, displayName: displayName(pid: pid, bundleID: bundleID))
     }
 }
 
