@@ -146,7 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             try systemMute.restoreIfWeMuted()
         } catch {
-            restoreError = "Could not unmute the system mic \(moment): \(error)"
+            // Keep the first failure (e.g. "after the last run") until seen; retries repeat it.
+            restoreError = restoreError ?? "Could not unmute the system mic \(moment): \(error)"
         }
     }
 
