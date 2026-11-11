@@ -1,7 +1,7 @@
 # System-wide AirPods Mute — Design
 
 Date: 2026-11-11
-Status: Implemented 2026-11-11 (live-verified: Slack mute/unmute, auto-unmute, crash recovery, Meet path, AirPods disconnect)
+Status: Implemented 2026-11-11; updated after the final review (per-device mute, all-or-nothing, audible mid-call unmute)
 Builds on: `2026-11-09-airpods-meet-mute-design.md` (Meet path, unchanged)
 
 ## Goal
@@ -24,99 +24,89 @@ truthful in-page toggle; every other app gets a system-level microphone mute.
 |---|---|
 | Mute model | **Hybrid**: Meet tab → press Meet's button (existing path); otherwise → system-level mic mute |
 | When to take over the stem | **Any other app recording from the mic**, except apps with native AirPods mute |
-| Mute mechanism | CoreAudio input-scope `kAudioDevicePropertyMute` on the default input device; fallback: input volume scalar → 0 and restore |
+| Mute mechanism | CoreAudio input-scope `kAudioDevicePropertyMute` on **each input device the call app captures from** (the default input when that is unknown); fallback: input volume scalar → 0 and restore |
 
 ## Environment facts (2026-11-11)
 
-- Slack 4.53 installed (`com.tinyspeck.slackmacgap`); no evidence it supports the AirPods
-  mute gesture. Teams desktop is not installed; Microsoft announced native AirPods mute
-  for Teams on macOS Sonoma in 2024 (MC718244), unverified on current builds.
-- The current default input (a USB audio device) exposes a settable input mute on
-  element 0 and a settable volume scalar on element 1. The AirPods Pro 2 mic in headset
-  mode is **not yet probed** — Milestone 1.
+- Slack 4.53 (`com.tinyspeck.slackmacgap`) shows no sign of supporting the AirPods mute
+  gesture. Teams desktop is not installed; Microsoft announced native AirPods mute for
+  Teams on macOS Sonoma in 2024 (MC718244), unverified on current builds.
+- Probed (`docs/system-mute-spike-findings.md`): the AirPods Pro 2 mic in headset mode
+  exposes a **settable input mute** (main element), and muting it silences a Slack huddle.
+  A USB audio interface also has a settable input mute.
+- No background recorders were seen without a call, so the ignore list starts empty.
 - The press only reaches an app that holds microphone input and observes
   `inputMuteStateChangeNotification` (see README, "macOS behaviours").
 
 ## Architecture
 
-New units, each behind a protocol so the routing logic is unit-testable:
+Core units are pure or sit behind a protocol, so routing and safety are unit-tested with fakes:
 
-| Unit | Responsibility | Depends on |
-|---|---|---|
-| `MicUsageMonitor` (core, protocol `RecordingProcessSource`) | Lists processes other than ours that are currently recording, as bundle IDs, via the CoreAudio process objects (`kAudioHardwarePropertyProcessObjectList`, `kAudioProcessPropertyIsRunningInput`, `kAudioProcessPropertyBundleID`; macOS 14.2+). Classifies each as `native` (on the native-handler list) or `handled-by-us`. | CoreAudio (adapter) |
-| `SystemMicMute` (core, protocol `InputMuteDevice`) | Mutes/unmutes the current default input device: device mute property if settable, else volume scalar 0 with the previous volume remembered and restored. Reports which mechanism it used. | CoreAudio (adapter) |
-| `MuteRouter` (core) | Pure decision: given (Meet call present?, recording processes), returns `meet`, `system(appNames)`, or `standAside`. Also decides whether the app should hold the mic. | — |
-| `MuteSafety` (core, protocol `MuteFlagStore`) | Persists "we muted the device" (UserDefaults in the app); drives auto-unmute rules. | — |
-| `AppDelegate` (app) | Poll asks the router each tick; holds/releases input accordingly; press handler dispatches to `MuteController` (Meet) or `SystemMicMute`; renders the menu. | all |
+| Unit | Responsibility |
+|---|---|
+| `decideRoute` / `MuteRoute` (`MuteRoute.swift`) | Pure decision from (Meet call present?, recorders): `.meet`, `.standAside(nativeAppNames)`, `.system(appNames)` or `.idle`; `holdsMic` says when to hold the mic. `callRecorders` drops known background recorders. |
+| `RouteTracker` | Turns each poll's readings into a route, riding out a Meet script error or a failed/empty recorder listing for 2 polls; remembers `systemRecorders`, the recorders behind the current `.system` route. |
+| `targetInputDeviceUIDs` | The devices a system mute must silence: the de-duplicated union of the recorders' input devices, plus the default input if any recorder's devices are unknown. |
+| `SystemMicMuter` | `mute`/`unmute(deviceUIDs:)`, `restoreIfWeMuted() -> Bool`, `isMuted(deviceUIDs:)`. Device mute if settable, else volume 0 with the old level recorded. |
+| `MuteRecordStore` (`UserDefaultsMuteRecordStore`) | One `MuteRecord` per device we muted (UID, mechanism, previous volume). |
+| CoreAudio adapters | `CoreAudioRecordingProcessSource` (process objects, `kAudioProcessPropertyIsRunningInput`, input-scope `kAudioProcessPropertyDevices`; macOS 14.2+) and `CoreAudioInputDeviceProvider` / `CoreAudioInputDevice`. Thin, smoke-tested. |
+| App (`AppDelegate`, `SystemMuteRestore`) | Poll, press dispatch, auto-unmute with its notices, menu. |
 
-Native-handler list (bundle IDs, editable constant): Microsoft Teams desktop
-(`com.microsoft.teams2`, `com.microsoft.teams`), FaceTime (`com.apple.FaceTime`).
-Our own process is always excluded.
+Native-handler list (editable constant): Teams desktop (`com.microsoft.teams2`,
+`com.microsoft.teams`), FaceTime (`com.apple.FaceTime`). Browser helpers count as their
+browser. Our own process is excluded.
 
 ## Data flow
 
-**Each poll (3 s):**
+**Each poll (3 s):** refresh Meet and list recorders, then `RouteTracker` decides:
 
-1. `MuteController.refresh()` (Meet tab, as today) and `MicUsageMonitor.recordingProcesses()`.
-2. `MuteRouter` decides:
-   - Meet call tab present → `meet`: hold the mic; sync the system mute state to Meet's (existing).
-   - else any recording process not on the native list → `system`: hold the mic; mirror
-     the device mute state into `AVAudioApplication` (guarded `syncSystemMute`).
-   - else → `standAside`: release the mic, so native apps (or play/pause) get the press.
-3. Leaving `system` (no non-native app recording any more) while we muted the device →
-   auto-unmute (see Safety).
+- Meet call tab → `.meet`: hold the mic; sync the system mute state to Meet's.
+- else a native handler recording → `.standAside`: release the mic so it gets the press.
+- else any other call recorder → `.system`: hold the mic; mirror `isMuted` of the target
+  devices into `AVAudioApplication` (guarded sync, skipped just after a press).
+- else → `.idle`: release the mic.
 
-**Each press:**
+Any route other than `.system` runs `restoreIfWeMuted()` (a no-op without records).
 
-- Route `meet` → existing Meet path.
-- Route `system` → `SystemMicMute.setMuted(requested)`; on success play the cue, return
-  true (the system records the state and plays the banner); on failure return false and
-  surface the error.
-- The handler never calls `setInputMuted` (re-entrancy rule from the Meet work).
+**Each press:** `.meet` → Meet's button. `.system` → `mute`/`unmute` on
+`targetInputDeviceUIDs(systemRecorders)`; success plays the cue and returns true (the
+system records the state); failure returns false and shows the error. `.standAside`/`.idle`
+→ false. The handler never calls `setInputMuted` (re-entrancy).
 
-## Safety — never leave the user silently muted
+## Safety — never silently muted, never silently unmuted mid-call
 
-A stuck system mute silences the user in every app, so:
-
-1. **Auto-unmute whenever the route is not `system`**: when the call ends, a Meet call takes
-   over, or we stand aside for a native handler, undo a mute we applied.
-   A failed recorder listing is not "nothing recording": after a `system` route it is held
-   for up to 2 consecutive failed polls (`RouteTracker`) so a glitch cannot unmute mid-call.
-2. **Unmute on launch** if the persisted flag says we left the device muted (crash,
-   force-quit, reboot mid-call).
-3. **Unmute on quit** (`applicationWillTerminate`); SIGTERM is routed through
-   `NSApp.terminate` so it runs too (SIGKILL is covered by rule 2).
-4. **Only undo our own mute**: if the device was already muted when we started, or the
-   user muted it elsewhere, leave it alone (flag is set only when *we* muted it).
-5. **Default device changes** (AirPods disconnect mid-call): unmute the device we muted
-   before acting on the new default; the flag records the device UID.
+1. **Per-device records, written before the mute.** A crash in between leaves a record for
+   an unmuted device (harmless), never a muted device without one. A failed device write
+   rolls the record back. Only recorded mutes are undone automatically; a mute that was
+   already there (set by the user or another app) is never claimed.
+2. **All-or-nothing mute.** If any target fails, the devices this press muted are unmuted
+   again and their records dropped; the error names the failed devices.
+3. **Auto-unmute off the `.system` route**, on launch (crash, force-quit, reboot) and on
+   quit. SIGTERM is routed through `NSApp.terminate` so quit runs; SIGKILL is covered by
+   the launch restore. An unreadable record fails safe by unmuting the default input.
+4. **Absent devices keep their records** and are restored when they return (verified live:
+   AirPods disconnected while muted reconnect unmuted, so the restore changes nothing).
+5. **Unknown is not "nothing recording".** A failed or empty recorder listing after `.system`
+   holds the route for 2 polls, so a glitch or an AirPods mode switch can't unmute mid-call.
+6. **A mid-call auto-unmute is audible.** If we unmute while an app may still be on a call
+   (Meet started, a native handler took over, the listing is unknown), the unmute cue plays
+   and a one-shot menu notice says why. A plain call end stays silent.
+7. **Switching devices:** a mute press first restores our mutes on devices the call no
+   longer uses; an explicit unmute restores all of ours and clears a foreign mute on the targets.
 
 ## Feedback and errors
 
 - Same two-note cue and system banner as the Meet path.
-- Menu shows `System mic muted — Slack` / `System mic live — Slack` (the recording apps'
-  names), or `Standing aside — Teams handles AirPods mute`.
-- Errors (device mute failed, process list unavailable on < 14.2, volume restore failed)
-  appear as ⚠️ rows, like every other failure.
+- Menu shows `System mic muted — Slack` / `System mic live — Slack`, or
+  `Standing aside — Microsoft Teams handles AirPods mute`.
+- Errors and one-shot notices appear as ⚠️ rows; the title appends ⚠️ to the mute state
+  (`🎧🔇⚠️`) instead of hiding it.
 
 ## Testing
 
-- Unit (swift-testing): `MuteRouter` decisions for every combination (Meet ± recording
-  apps ± native apps ± only us); `MuteSafety` rules (launch-unmute only with the flag,
-  never undo a pre-existing mute, device-change handling) with fake device and store;
-  `SystemMicMute` mechanism choice and volume restore with a fake device.
-- Adapters (CoreAudio) stay thin and are exercised in the spike and live tests.
-- Live: Slack huddle mute/unmute heard as silence by the other side (or loopback);
-  Meet still uses its own button; Teams-in-browser takes the system path; kill -9 while
-  muted → relaunch → device unmuted.
-
-## Milestones
-
-1. **Spike (needs Joel, AirPods connected)**: (a) does the AirPods headset-mode mic
-   expose a settable input mute; (b) does a muted device send silence to a Slack huddle;
-   (c) does a browser call show up as a recording process with the browser's bundle ID.
-   (a) fails → volume fallback; (b) fails → stop and rethink.
-2. Core: `MuteRouter`, `MuteSafety`, `SystemMicMute` logic with fakes, TDD.
-3. CoreAudio adapters: process list and device mute/volume.
-4. App wiring: routing in poll and press, safety hooks, menu text.
-5. Live verification and README update.
+- Unit (swift-testing): route decisions, `RouteTracker` tolerance, target devices,
+  `SystemMicMuter` safety rules (record-first, rollback, all-or-nothing, absent devices,
+  unreadable record, volume fallback) with fake devices and store, menu text.
+- CoreAudio adapters: read-only smoke tests plus live checks.
+- Live (2026-11-11): Slack mute/unmute, auto-unmute, crash recovery, Meet path,
+  AirPods disconnect.
