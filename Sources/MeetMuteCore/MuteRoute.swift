@@ -5,12 +5,25 @@ public struct RecordingProcess: Equatable, Sendable {
     public let pid: Int32
     public let bundleID: String
     public let displayName: String
+    /// UIDs of the input devices the process captures from; empty when unknown.
+    public let inputDeviceUIDs: [String]
 
-    public init(pid: Int32, bundleID: String, displayName: String) {
+    public init(pid: Int32, bundleID: String, displayName: String, inputDeviceUIDs: [String] = []) {
         self.pid = pid
         self.bundleID = bundleID
         self.displayName = displayName
+        self.inputDeviceUIDs = inputDeviceUIDs
     }
+}
+
+/// The input devices a system mute must silence: every device the recorders capture from, or
+/// the default input when none reports its devices (unknown is treated as "the default").
+public func targetInputDeviceUIDs(for recorders: [RecordingProcess], defaultInputUID: String) -> [String] {
+    var seen = Set<String>()
+    let recorderDevices = recorders
+        .flatMap(\.inputDeviceUIDs)
+        .filter { deviceUID in seen.insert(deviceUID).inserted }
+    return recorderDevices.isEmpty ? [defaultInputUID] : recorderDevices
 }
 
 /// Apps that handle the AirPods mute gesture themselves; we never take the press from them.

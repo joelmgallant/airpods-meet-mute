@@ -22,3 +22,12 @@ import Testing
     let error = CoreAudioError(operation: "set input mute", status: 0x21646576)  // '!dev'
     #expect(error.description == "CoreAudio set input mute failed ('!dev')")
 }
+
+@Test func everyReportedRecorderInputDeviceResolvesToAnInputDevice() throws {
+    let provider = CoreAudioInputDeviceProvider()
+    for recorder in try CoreAudioRecordingProcessSource().recordingProcesses() {
+        for deviceUID in recorder.inputDeviceUIDs {
+            #expect(try provider.inputDevice(uid: deviceUID) != nil, "\(recorder.displayName) → \(deviceUID)")
+        }
+    }
+}

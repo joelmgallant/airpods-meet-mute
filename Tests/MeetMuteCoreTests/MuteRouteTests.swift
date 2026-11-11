@@ -84,3 +84,19 @@ private func recorder(_ bundleID: String, _ name: String, pid: Int32 = 100) -> R
     #expect(!MuteRoute.meet.isSystem)
     #expect(!MuteRoute.idle.isSystem)
 }
+
+@Test func targetDevicesAreTheDeduplicatedUnionOfRecorderInputsInOrder() {
+    let slackOnUSB = RecordingProcess(pid: 1, bundleID: "com.tinyspeck.slackmacgap.helper", displayName: "Slack",
+                                      inputDeviceUIDs: ["usb", "airpods"])
+    let zoomOnAirPods = RecordingProcess(pid: 2, bundleID: "us.zoom.xos", displayName: "Zoom",
+                                         inputDeviceUIDs: ["airpods", "studio"])
+    let unknownDevices = RecordingProcess(pid: 3, bundleID: "com.example.app", displayName: "Example")
+    #expect(targetInputDeviceUIDs(for: [slackOnUSB, unknownDevices, zoomOnAirPods], defaultInputUID: "builtin")
+            == ["usb", "airpods", "studio"])
+}
+
+@Test func targetDevicesFallBackToTheDefaultInputWhenNoRecorderReportsOne() {
+    let unknownDevices = RecordingProcess(pid: 3, bundleID: "com.example.app", displayName: "Example")
+    #expect(targetInputDeviceUIDs(for: [unknownDevices], defaultInputUID: "builtin") == ["builtin"])
+    #expect(targetInputDeviceUIDs(for: [], defaultInputUID: "builtin") == ["builtin"])
+}

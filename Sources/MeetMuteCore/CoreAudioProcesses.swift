@@ -44,8 +44,34 @@ public struct CoreAudioRecordingProcessSource: RecordingProcessSource {
         guard pid != excludedPID else { return nil }
         let bundleID = (try? readString(processObject, propertyAddress(kAudioProcessPropertyBundleID),
                                         operation: "read process bundle ID")) ?? ""
-        return RecordingProcess(pid: pid, bundleID: bundleID, displayName: displayName(pid: pid, bundleID: bundleID))
+        return RecordingProcess(pid: pid, bundleID: bundleID, displayName: displayName(pid: pid, bundleID: bundleID),
+                                inputDeviceUIDs: inputDeviceUIDs(processObject))
     }
+
+    /// The input devices the process captures from (`kAudioProcessPropertyDevices`, input scope),
+    /// keeping only devices with input streams. Any read failure yields [] (or drops that device):
+    /// the caller then falls back to the default input, which is what this app muted before.
+    @available(macOS 14.2, *)
+    private func inputDeviceUIDs(_ processObject: AudioObjectID) -> [String] {
+        let deviceObjects = (try? readObjectIDs(
+            processObject,
+            propertyAddress(kAudioProcessPropertyDevices, scope: kAudioObjectPropertyScopeInput),
+            operation: "list process input devices"
+        )) ?? []
+        return deviceObjects.compactMap { deviceObject in
+            guard hasInputStreams(deviceObject) else { return nil }
+            return try? readString(deviceObject, propertyAddress(kAudioDevicePropertyDeviceUID), operation: "read device UID")
+        }
+    }
+}
+
+func hasInputStreams(_ deviceObject: AudioObjectID) -> Bool {
+    let streams = try? readObjectIDs(
+        deviceObject,
+        propertyAddress(kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput),
+        operation: "list device input streams"
+    )
+    return !(streams ?? []).isEmpty
 }
 
 /// "Vivaldi", not "Vivaldi Helper": name the owning app when the recorder is a helper process.
