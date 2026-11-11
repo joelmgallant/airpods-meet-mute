@@ -2,18 +2,18 @@ import AppKit
 import MeetMuteCore
 import ServiceManagement
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let pollInterval: TimeInterval = 3
     /// A poll this soon after a handled press skips the system-mute sync: the press already
     /// made the system record the requested state, and a sync from a stale read could undo it.
     private let syncQuietPeriodAfterPress: TimeInterval = 1.5
-    /// Consecutive AppleScript error polls a Meet call survives before it counts as ended.
-    private let errorPollsBeforeLeavingMeet = 2
 
     private let controller = MuteController(browsers: Browser.allCases.map { ChromiumBridge(browser: $0) })
     private let recorders: RecordingProcessSource = CoreAudioRecordingProcessSource()
     private let systemMute = SystemMicMuter(devices: CoreAudioInputDeviceProvider(), store: UserDefaultsMuteRecordStore())
     private let listener = GestureListener()
+    private let terminationSignal = TerminationSignalHandler()
+    private var routeTracker = RouteTracker()
     private let pressSound = PressFeedbackSound()
     private var statusItem: NSStatusItem!
     private var pollTimer: Timer?
@@ -21,18 +21,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var route: MuteRoute = .idle
     private var systemMuted: Bool?
     private var lastHandledPress: Date?
-    private var wasInMeetCall = false
-    private var consecutiveMeetErrorPolls = 0
 
     private var listenerError: String?
     private var inputError: String?
     private var syncError: String?
-    private var systemError: String?
+    /// Read failure: cleared by the next successful read. Press failure: cleared by the next
+    /// successful press or by leaving the system route.
+    private var systemReadError: String?
+    private var systemPressError: String?
+    /// Failed unmute at launch/after a call/on quit. Kept until the user opens the menu (the
+    /// notice is then rendered at least once), so a later poll cannot erase it unseen.
+    private var restoreError: String?
     private var recorderError: String?
     private var loginItemError: String?
     private var soundError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        terminationSignal.install()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         restoreSystemMute(when: "after the last run")  // a crash or force-quit may have left the mic muted
         listener.onMuteRequest = { [weak self] shouldMute in
@@ -67,11 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .system:
             do {
                 if shouldMute { try systemMute.mute() } else { try systemMute.unmute() }
-                systemError = nil
+                systemPressError = nil
                 systemMuted = shouldMute
                 newState = shouldMute ? .muted : .unmuted
             } catch {
-                systemError = "Could not \(shouldMute ? "mute" : "unmute") the system mic: \(error)"
+                systemPressError = "Could not \(shouldMute ? "mute" : "unmute") the system mic: \(error)"
                 newState = nil
             }
         case .standAside, .idle:
@@ -87,8 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func poll() {
         let meetStatus = controller.refresh()
-        route = decideRoute(meetCallPresent: meetCallPresent(meetStatus), recording: currentRecorders())
+        route = routeTracker.nextRoute(meetStatus: meetStatus, recorders: currentRecorders())
         if !route.isSystem {
+            systemReadError = nil
+            systemPressError = nil
             restoreSystemMute(when: "after the call")  // no-op unless we muted the device
         }
         switch route {
@@ -101,10 +108,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let muted = try systemMute.isDefaultInputMuted()
                 systemMuted = muted
+                systemReadError = nil
                 if !inQuietPeriodAfterPress { syncError = listener.syncSystemMute(muted) }
             } catch {
                 systemMuted = nil
-                systemError = "Could not read the system mic state: \(error)"
+                systemReadError = "Could not read the system mic state: \(error)"
             }
         case .standAside, .idle:
             systemMuted = nil
@@ -124,41 +132,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return Date().timeIntervalSince(lastHandledPress) < syncQuietPeriodAfterPress
     }
 
-    /// A Meet call survives a couple of transient AppleScript errors, so one glitch neither
-    /// drops the held mic nor reroutes presses to the system path mid-call.
-    private func meetCallPresent(_ status: MeetStatus) -> Bool {
-        switch status {
-        case .inCall:
-            consecutiveMeetErrorPolls = 0
-            wasInMeetCall = true
-            return true
-        case .error where wasInMeetCall && consecutiveMeetErrorPolls < errorPollsBeforeLeavingMeet:
-            consecutiveMeetErrorPolls += 1
-            return true
-        case .error, .idle:
-            consecutiveMeetErrorPolls = 0
-            wasInMeetCall = false
-            return false
-        }
-    }
-
-    private func currentRecorders() -> [RecordingProcess] {
-        do {
-            let found = try recorders.recordingProcesses()
-            recorderError = nil
-            return found
-        } catch {
+    private func currentRecorders() -> Result<[RecordingProcess], Error> {
+        let result = Result { try recorders.recordingProcesses() }
+        if case .failure(let error) = result {
             recorderError = "Could not list apps using the mic: \(error)"
-            return []
+        } else {
+            recorderError = nil
         }
+        return result
     }
 
     private func restoreSystemMute(when moment: String) {
         do {
             try systemMute.restoreIfWeMuted()
-            if !route.isSystem { systemError = nil }
         } catch {
-            systemError = "Could not unmute the system mic \(moment): \(error)"
+            restoreError = "Could not unmute the system mic \(moment): \(error)"
         }
     }
 
@@ -166,20 +154,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func render() {
         let meetStatus = controller.status
-        var problems = [listenerError, inputError, syncError, systemError, recorderError,
+        var problems = [listenerError, inputError, syncError, systemReadError, systemPressError,
+                        restoreError, recorderError,
                         loginItemError, soundError, controller.lastPressError].compactMap { $0 }
         if case .error(let message) = meetStatus, route != .meet, route != .idle {
             problems.insert(message, at: 0)  // the status line is about another app; keep the Meet error visible
         }
         statusItem.button?.title = menuTitle(route: route, meetStatus: meetStatus, systemMuted: systemMuted,
                                              hasProblem: !problems.isEmpty)
-        statusItem.menu = StatusMenu.build(
+        let menu = StatusMenu.build(
             statusLine: menuStatusLine(route: route, meetStatus: meetStatus, systemMuted: systemMuted),
             problems: problems,
             launchAtLoginEnabled: SMAppService.mainApp.status == .enabled,
             actionTarget: self,
             toggleLaunchAtLogin: #selector(toggleLaunchAtLogin)
         )
+        menu.delegate = self
+        statusItem.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        restoreError = nil  // this menu was built with it; the next render drops it
     }
 
     @objc private func toggleLaunchAtLogin() {
