@@ -1,7 +1,7 @@
 # System-wide AirPods Mute — Design
 
 Date: 2026-11-11
-Status: Approved (design), pending spec review
+Status: Implemented 2026-11-11 (live-verified: Slack mute/unmute, auto-unmute, crash recovery, Meet path, AirPods disconnect)
 Builds on: `2026-11-09-airpods-meet-mute-design.md` (Meet path, unchanged)
 
 ## Goal

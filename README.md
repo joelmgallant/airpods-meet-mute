@@ -1,8 +1,10 @@
 # AirPods Meet Mute
 
-Press an AirPods Pro stem during a Google Meet call in Vivaldi or Chrome to mute or
-unmute yourself. It presses Meet's own mic button, so Meet's UI, the other
-participants and the AirPods chime all agree.
+Press an AirPods Pro stem during a call to mute or unmute yourself — in Google Meet
+(Vivaldi or Chrome) and in any other call app (Slack huddles, Teams in a browser, Zoom…).
+In Meet it presses Meet's own mic button, so Meet's UI stays truthful. Everywhere else it
+mutes the microphone device itself, so the app receives silence; that app's own mic icon
+will still look unmuted, so trust the menu-bar icon.
 
 ## How it works
 
@@ -32,6 +34,19 @@ Menu icon: 🎧 no call · 🎧🎙️ unmuted · 🎧🔇 muted · 🎧⚠️ n
 
 Debug the audio server's side of a press with:
 `/usr/bin/log show --last 5m --predicate 'process == "audiomxd" AND eventMessage CONTAINS "InputMuteAction"'`
+
+### System-wide mute
+
+- The app takes over the stem only while another app is recording from the mic, and
+  stands aside for apps that handle AirPods mute themselves (Teams desktop, FaceTime).
+- It mutes the default input device (CoreAudio input mute, or input volume 0 where the
+  device has no mute) and never leaves you muted: it unmutes when the call ends, on quit
+  (including `kill`), and on the next launch after a crash. A mute you set elsewhere is
+  never undone automatically.
+- One failed read of which apps are recording doesn't unmute you mid-call; the call
+  route is held for two polls first.
+- `swift scripts/system-mute-probe.swift status|list` shows the device mute state and
+  which apps are recording. Findings: `docs/system-mute-spike-findings.md`.
 
 ## Setup
 
