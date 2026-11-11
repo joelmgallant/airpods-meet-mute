@@ -23,6 +23,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN_DIR/$PRODUCT" "$APP/Contents/MacOS/$PRODUCT"
 cp "Support/$PRODUCT-Info.plist" "$APP/Contents/Info.plist"
+if [ -f "Support/AppIcon.icns" ] && grep -q CFBundleIconFile "Support/$PRODUCT-Info.plist"; then
+    mkdir -p "$APP/Contents/Resources"
+    cp Support/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+fi
 
 codesign --force --options runtime --timestamp=none \
     --entitlements "Support/$PRODUCT.entitlements" \
