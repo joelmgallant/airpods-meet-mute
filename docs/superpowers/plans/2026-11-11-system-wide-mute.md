@@ -819,7 +819,7 @@ public final class SystemMicMuter {
     public func restoreIfWeMuted() throws {
         guard let record = store.load() else { return }
         guard let device = try devices.inputDevice(uid: record.deviceUID) else {
-            store.save(nil)  // device disconnected; checked live in Task 7 Step 6
+            store.save(nil)  // superseded: AirPods reconnected unmuted live (2026-11-11); records for absent devices are now kept and restored on return
             return
         }
         try restore(record, on: device)

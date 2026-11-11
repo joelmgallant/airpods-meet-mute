@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let terminationSignal = TerminationSignalHandler()
     private var routeTracker = RouteTracker()
     private let pressSound = PressFeedbackSound()
+    private lazy var restore = SystemMuteRestore(muter: systemMute, pressSound: pressSound)
     private var statusItem: NSStatusItem!
     private var pollTimer: Timer?
 
@@ -29,9 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// successful press or by leaving the system route.
     private var systemReadError: String?
     private var systemPressError: String?
-    /// Failed unmute at launch/after a call/on quit. Kept until the user opens the menu (the
-    /// notice is then rendered at least once), so a later poll cannot erase it unseen.
-    private var restoreError: String?
     private var recorderError: String?
     private var loginItemError: String?
     private var soundError: String?
@@ -39,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         terminationSignal.install()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        restoreSystemMute(when: "after the last run")  // a crash or force-quit may have left the mic muted
+        restore.restore(when: "after the last run")  // a crash or force-quit may have left the mic muted
         listener.onMuteRequest = { [weak self] shouldMute in
             guard let self else { return false }
             let handled = self.handlePress(shouldMute: shouldMute)
@@ -58,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        restoreSystemMute(when: "on quit")
+        restore.restore(when: "on quit")
     }
 
     // MARK: Press
@@ -93,11 +91,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func poll() {
         let meetStatus = controller.refresh()
-        route = routeTracker.nextRoute(meetStatus: meetStatus, recorders: currentRecorders())
+        let listing = currentRecorders()
+        route = routeTracker.nextRoute(meetStatus: meetStatus, recorders: listing)
         if !route.isSystem {
             systemReadError = nil
             systemPressError = nil
-            restoreSystemMute(when: "after the call")  // no-op unless we muted the device
+            let recorderNames = (try? listing.get()).map { processes in callRecorders(processes).map(\.displayName) }
+            // No-op unless we muted a device; audible if an app may still be on a call.
+            soundError = restore.restore(when: "after the call", route: route, recorderNames: recorderNames) ?? soundError
         }
         switch route {
         case .meet:
@@ -143,22 +144,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return result
     }
 
-    private func restoreSystemMute(when moment: String) {
-        do {
-            try systemMute.restoreIfWeMuted()
-        } catch {
-            // Keep the first failure (e.g. "after the last run") until seen; retries repeat it.
-            restoreError = restoreError ?? "Could not unmute the system mic \(moment): \(error)"
-        }
-    }
-
     // MARK: Menu
 
     private func render() {
         let meetStatus = controller.status
-        var problems = [listenerError, inputError, syncError, systemReadError, systemPressError,
-                        restoreError, recorderError,
-                        loginItemError, soundError, controller.lastPressError].compactMap { $0 }
+        var problems = restore.problems + [listenerError, inputError, syncError, systemReadError, systemPressError,
+                                           recorderError, loginItemError, soundError, controller.lastPressError].compactMap { $0 }
         if case .error(let message) = meetStatus, route != .meet, route != .idle {
             problems.insert(message, at: 0)  // the status line is about another app; keep the Meet error visible
         }
@@ -176,7 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        restoreError = nil  // this menu was built with it; the next render drops it
+        restore.markSeen()  // this menu was built with its notices; the next render drops them
     }
 
     @objc private func toggleLaunchAtLogin() {
