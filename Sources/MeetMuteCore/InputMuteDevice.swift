@@ -12,6 +12,42 @@ public protocol InputMuteDevice: AnyObject {
     func setVolume(_ volume: Float) throws
 }
 
+/// Applying and undoing one mute record on its device. Each returns whether the device changed.
+extension InputMuteDevice {
+    /// Our mute may already have been undone elsewhere; then nothing is written.
+    func undo(_ record: MuteRecord) throws -> Bool {
+        switch record.mechanism {
+        case .deviceMute:
+            guard try isMuted() else { return false }
+            try setMuted(false)
+        case .volumeZero:
+            guard try volume() == 0 else { return false }
+            try setVolume(record.previousVolume ?? 1)
+        }
+        return true
+    }
+
+    /// Re-silences a device whose mute (ours) was undone elsewhere.
+    func reapply(_ record: MuteRecord) throws -> Bool {
+        switch record.mechanism {
+        case .deviceMute:
+            guard try !isMuted() else { return false }
+            try setMuted(true)
+        case .volumeZero:
+            guard try volume() > 0 else { return false }
+            try setVolume(0)
+        }
+        return true
+    }
+
+    /// Device mute, or input volume 0 on a device without one.
+    func isSilenced() throws -> Bool {
+        if supportsMute, try isMuted() { return true }
+        guard supportsVolume else { return false }
+        return try volume() == 0
+    }
+}
+
 public protocol InputDeviceProvider {
     func defaultInputUID() throws -> String
     /// nil when no connected device has this UID.

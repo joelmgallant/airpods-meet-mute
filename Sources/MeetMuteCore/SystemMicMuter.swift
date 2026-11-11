@@ -15,18 +15,25 @@ public final class SystemMicMuter {
         try targetInputDeviceUIDs(for: recorders, defaultInputUID: devices.defaultInputUID())
     }
 
-    /// Our mutes on devices the call no longer uses are undone first. A failing device never
-    /// stops the others; every failure is reported together afterwards.
+    /// Our mutes on devices the call no longer uses are undone first. All or nothing: if any
+    /// target fails, the devices this call muted are unmuted again (records dropped) and every
+    /// failure is reported. Mutes that predate the call (ours or foreign) are left alone.
     public func mute(deviceUIDs: [String]) throws {
         let targets = uniqued(deviceUIDs)
         var records = try loadRecords(failSafeDeviceUIDs: { targets })
         var failures = restorePresentRecords(in: &records) { record in !targets.contains(record.deviceUID) }.failures
+        var mutedByThisCall: Set<String> = []
+        var targetFailed = false
         for deviceUID in targets {
             do {
-                try mute(deviceUID, records: &records)
+                if try mute(deviceUID, records: &records) { mutedByThisCall.insert(deviceUID) }
             } catch {
+                targetFailed = true
                 failures.append(failure(deviceUID, error))
             }
+        }
+        if targetFailed {
+            failures += restorePresentRecords(in: &records) { record in mutedByThisCall.contains(record.deviceUID) }.failures
         }
         try throwIfAny(failures)
     }
@@ -49,8 +56,9 @@ public final class SystemMicMuter {
     }
 
     /// Auto-unmute (call ended, launch after a crash, quit): undoes only mutes we applied, on
-    /// devices that are connected. A disconnected device keeps its record until it returns.
-    /// Returns whether any device actually changed.
+    /// devices that are connected. A disconnected device keeps its record until it returns
+    /// (verified live 2026-11-11: AirPods disconnected while muted reconnected unmuted, so the kept
+    /// record's undo finds nothing to change). Returns whether any device actually changed.
     @discardableResult
     public func restoreIfWeMuted() throws -> Bool {
         var records = try loadRecords(failSafeDeviceUIDs: { [try devices.defaultInputUID()] })
@@ -63,7 +71,7 @@ public final class SystemMicMuter {
     public func isMuted(deviceUIDs: [String]) throws -> Bool {
         guard !deviceUIDs.isEmpty else { return false }
         for deviceUID in deviceUIDs {
-            guard let device = try devices.inputDevice(uid: deviceUID), try isSilenced(device) else { return false }
+            guard let device = try devices.inputDevice(uid: deviceUID), try device.isSilenced() else { return false }
         }
         return true
     }
@@ -115,7 +123,7 @@ public final class SystemMicMuter {
         for record in records where shouldRestore(record) {
             do {
                 guard let device = try devices.inputDevice(uid: record.deviceUID) else { continue }
-                changed = try undo(record, on: device) || changed
+                changed = try device.undo(record) || changed
                 let remainingRecords = records.filter { kept in kept.deviceUID != record.deviceUID }
                 try store.save(remainingRecords)
                 records = remainingRecords
@@ -128,53 +136,29 @@ public final class SystemMicMuter {
 
     // MARK: One device
 
-    private func mute(_ deviceUID: String, records: inout [MuteRecord]) throws {
+    /// Returns whether this call changed the device (a fresh mute or a reapplied one).
+    private func mute(_ deviceUID: String, records: inout [MuteRecord]) throws -> Bool {
         guard let device = try devices.inputDevice(uid: deviceUID) else { throw SystemMuteError.notConnected }
         if let record = records.first(where: { record in record.deviceUID == deviceUID }) {
-            try reapply(record, on: device)
+            return try device.reapply(record)
         } else if device.supportsMute {
-            guard try !device.isMuted() else { return }  // muted by someone else: not ours to undo
+            guard try !device.isMuted() else { return false }  // muted by someone else: not ours to undo
             let record = MuteRecord(deviceUID: deviceUID, mechanism: .deviceMute, previousVolume: nil)
             try applyRecordingFirst(record, records: &records) { try device.setMuted(true) }
         } else if device.supportsVolume {
             let currentVolume = try device.volume()
-            guard currentVolume > 0 else { return }
+            guard currentVolume > 0 else { return false }
             let record = MuteRecord(deviceUID: deviceUID, mechanism: .volumeZero, previousVolume: currentVolume)
             try applyRecordingFirst(record, records: &records) { try device.setVolume(0) }
         } else {
             throw SystemMuteError.noMuteControls
         }
-    }
-
-    /// Returns whether the device changed: our mute may already have been undone elsewhere.
-    private func undo(_ record: MuteRecord, on device: InputMuteDevice) throws -> Bool {
-        switch record.mechanism {
-        case .deviceMute:
-            guard try device.isMuted() else { return false }
-            try device.setMuted(false)
-        case .volumeZero:
-            guard try device.volume() == 0 else { return false }
-            try device.setVolume(record.previousVolume ?? 1)
-        }
         return true
-    }
-
-    private func reapply(_ record: MuteRecord, on device: InputMuteDevice) throws {
-        switch record.mechanism {
-        case .deviceMute: if try !device.isMuted() { try device.setMuted(true) }
-        case .volumeZero: if try device.volume() > 0 { try device.setVolume(0) }
-        }
     }
 
     private func clearForeignMute(_ deviceUID: String) throws {
         guard let device = try devices.inputDevice(uid: deviceUID), device.supportsMute, try device.isMuted() else { return }
         try device.setMuted(false)
-    }
-
-    private func isSilenced(_ device: InputMuteDevice) throws -> Bool {
-        if device.supportsMute, try device.isMuted() { return true }
-        guard device.supportsVolume else { return false }
-        return try device.volume() == 0
     }
 
     private func failure(_ deviceUID: String, _ error: Error) -> DeviceMuteFailure {

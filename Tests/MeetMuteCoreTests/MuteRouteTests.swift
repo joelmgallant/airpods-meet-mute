@@ -90,9 +90,18 @@ private func recorder(_ bundleID: String, _ name: String, pid: Int32 = 100) -> R
                                       inputDeviceUIDs: ["usb", "airpods"])
     let zoomOnAirPods = RecordingProcess(pid: 2, bundleID: "us.zoom.xos", displayName: "Zoom",
                                          inputDeviceUIDs: ["airpods", "studio"])
-    let unknownDevices = RecordingProcess(pid: 3, bundleID: "com.example.app", displayName: "Example")
-    #expect(targetInputDeviceUIDs(for: [slackOnUSB, unknownDevices, zoomOnAirPods], defaultInputUID: "builtin")
+    #expect(targetInputDeviceUIDs(for: [slackOnUSB, zoomOnAirPods], defaultInputUID: "builtin")
             == ["usb", "airpods", "studio"])
+}
+
+@Test func aRecorderWithUnknownDevicesAddsTheDefaultInputToTheUnion() {
+    let slackOnUSB = RecordingProcess(pid: 1, bundleID: "com.tinyspeck.slackmacgap.helper", displayName: "Slack",
+                                      inputDeviceUIDs: ["usb", "airpods"])
+    let unknownDevices = RecordingProcess(pid: 3, bundleID: "com.example.app", displayName: "Example")
+    #expect(targetInputDeviceUIDs(for: [unknownDevices, slackOnUSB], defaultInputUID: "builtin")
+            == ["usb", "airpods", "builtin"])
+    #expect(targetInputDeviceUIDs(for: [slackOnUSB, unknownDevices], defaultInputUID: "airpods")
+            == ["usb", "airpods"])
 }
 
 @Test func targetDevicesFallBackToTheDefaultInputWhenNoRecorderReportsOne() {
