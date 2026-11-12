@@ -44,6 +44,14 @@ dead link.
   audioaccessoryd "Mute Control" event, no audiomxd InputMuteAction), so no app can stem-control
   a call on another mic. Our own silent input hold does not count as a call for this purpose.
 
+## Background recorder found later (2026-11-12)
+
+- Siri's speech service, corespeechd (audio session `com.apple.CoreSpeech`, signed
+  `com.apple.corespeechd`), records intermittently — 24 episodes in one day. The spike's
+  one-off baseline missed it. Treated as a call, it made the app hold the AirPods mic, which
+  kept corespeechd recording: a feedback loop that pinned the AirPods in headset mode until
+  the app quit. Both IDs are now ignored; bundle-less recorders fall back to their signing ID.
+
 ## Decision
 
 - **Continue.** Device mute works on the AirPods and silences Slack.

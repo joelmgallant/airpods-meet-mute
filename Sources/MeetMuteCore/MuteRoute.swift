@@ -36,9 +36,15 @@ public let nativeAirPodsMuteBundleIDs: Set<String> = [
     "com.apple.FaceTime",
 ]
 
-/// Processes that capture input in the background with no call. The spike found none
-/// (BACKGROUND_RECORDERS: none in docs/system-mute-spike-findings.md), so this starts empty.
-public let ignoredRecorderBundleIDs: Set<String> = []
+/// Processes that capture input in the background with no call. The spike's one-off check found
+/// none, but Siri's speech service (corespeechd) records intermittently — 24 times on 2026-11-12 —
+/// and once we held the AirPods mic for it, it kept recording, trapping the AirPods in headset
+/// mode until the app quit. The audio server attributes it to `com.apple.CoreSpeech`; its code
+/// signature says `com.apple.corespeechd`; both are listed because CoreAudio's choice is unverified.
+public let ignoredRecorderBundleIDs: Set<String> = [
+    "com.apple.CoreSpeech",
+    "com.apple.corespeechd",
+]
 
 /// "com.vivaldi.Vivaldi.helper" and "com.google.Chrome.helper.Renderer" → the owning app's ID.
 public func owningAppBundleID(_ bundleID: String) -> String {

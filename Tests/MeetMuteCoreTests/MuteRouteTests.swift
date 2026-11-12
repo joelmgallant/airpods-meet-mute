@@ -109,3 +109,15 @@ private func recorder(_ bundleID: String, _ name: String, pid: Int32 = 100) -> R
     #expect(targetInputDeviceUIDs(for: [unknownDevices], defaultInputUID: "builtin") == ["builtin"])
     #expect(targetInputDeviceUIDs(for: [], defaultInputUID: "builtin") == ["builtin"])
 }
+
+// Siri's speech service records in the background; holding the AirPods mic then keeps it
+// recording, so treating it as a call stuck the AirPods in headset mode (2026-11-12).
+@Test func siriSpeechServiceIsNeverACallUnderEitherName() {
+    #expect(decideRoute(meetCallPresent: false, recording: [recorder("com.apple.CoreSpeech", "corespeechd")]) == .idle)
+    #expect(decideRoute(meetCallPresent: false, recording: [recorder("com.apple.corespeechd", "corespeechd")]) == .idle)
+}
+
+@Test func siriInTheBackgroundDoesNotHideARealCall() {
+    let recording = [recorder("com.apple.corespeechd", "corespeechd"), recorder("com.tinyspeck.slackmacgap", "Slack")]
+    #expect(decideRoute(meetCallPresent: false, recording: recording) == .system(appNames: ["Slack"]))
+}

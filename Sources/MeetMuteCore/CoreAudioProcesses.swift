@@ -1,5 +1,6 @@
 import AppKit
 import CoreAudio
+import Security
 
 public protocol RecordingProcessSource {
     func recordingProcesses() throws -> [RecordingProcess]
@@ -42,8 +43,13 @@ public struct CoreAudioRecordingProcessSource: RecordingProcessSource {
             return nil
         }
         guard pid != excludedPID else { return nil }
-        let bundleID = (try? readString(processObject, propertyAddress(kAudioProcessPropertyBundleID),
-                                        operation: "read process bundle ID")) ?? ""
+        let coreAudioBundleID = (try? readString(processObject, propertyAddress(kAudioProcessPropertyBundleID),
+                                                 operation: "read process bundle ID")) ?? ""
+        let bundleID = recorderIdentifier(coreAudioBundleID: coreAudioBundleID, pid: pid)
+        if coreAudioBundleID.isEmpty {
+            // Unverified which ID CoreAudio gives bundle-less daemons (corespeechd); log what we used.
+            NSLog("AirPodsMeetMute: recorder pid \(pid) has no CoreAudio bundle ID; using \"\(bundleID)\"")
+        }
         return RecordingProcess(pid: pid, bundleID: bundleID, displayName: displayName(pid: pid, bundleID: bundleID),
                                 inputDeviceUIDs: inputDeviceUIDs(processObject))
     }
@@ -83,4 +89,26 @@ func displayName(pid: Int32, bundleID: String) -> String {
     }
     if let name = NSRunningApplication(processIdentifier: pid)?.localizedName { return name }
     return bundleID.isEmpty ? "process \(pid)" : bundleID
+}
+
+/// CoreAudio's bundle ID, or — for bundle-less processes such as system daemons — the code-signing
+/// identifier, so they can still be matched against the ignore and native lists.
+func recorderIdentifier(coreAudioBundleID: String, pid: Int32) -> String {
+    guard coreAudioBundleID.isEmpty else { return coreAudioBundleID }
+    return signingIdentifier(pid: pid) ?? ""
+}
+
+/// The code-signing identifier of a running process (e.g. "com.apple.corespeechd"), or nil.
+func signingIdentifier(pid: Int32) -> String? {
+    guard pid > 0 else { return nil }
+    var guestCode: SecCode?
+    let attributes = [kSecGuestAttributePid as String: NSNumber(value: pid)] as CFDictionary
+    guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &guestCode) == errSecSuccess,
+          let guestCode else { return nil }
+    var staticCode: SecStaticCode?
+    guard SecCodeCopyStaticCode(guestCode, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
+    var information: CFDictionary?
+    guard SecCodeCopySigningInformation(staticCode, [], &information) == errSecSuccess,
+          let signing = information as? [String: Any] else { return nil }
+    return signing[kSecCodeInfoIdentifier as String] as? String
 }

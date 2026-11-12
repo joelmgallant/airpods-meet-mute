@@ -31,3 +31,13 @@ import Testing
         }
     }
 }
+
+@Test func aProcessWithoutABundleIsIdentifiedByItsCodeSignature() {
+    #expect(signingIdentifier(pid: 1) == "com.apple.xpc.launchd")
+    #expect(signingIdentifier(pid: -1) == nil)
+}
+
+@Test func anEmptyCoreAudioBundleIDFallsBackToTheSigningIdentifier() {
+    #expect(recorderIdentifier(coreAudioBundleID: "", pid: 1) == "com.apple.xpc.launchd")
+    #expect(recorderIdentifier(coreAudioBundleID: "com.tinyspeck.slackmacgap.helper", pid: 1) == "com.tinyspeck.slackmacgap.helper")
+}
